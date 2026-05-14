@@ -224,8 +224,8 @@ logs/
 *.log.*
 log/
 
-app/static/*
-!app/static/.gitkeep
+ui/public/static/*
+!ui/public/static/.gitkeep
 
 # Test data
 test_data/

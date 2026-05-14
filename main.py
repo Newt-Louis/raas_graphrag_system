@@ -7,7 +7,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.core.config import settings
-from app.api.v1 import home, api_2, embed
+from app.api.v1 import home, ingest, embed
 
 
 @asynccontextmanager
@@ -37,7 +37,7 @@ app.add_middleware(
 
 # ============= API ROUTES =============
 app.include_router(home.router, prefix="/api/v1/feature1", tags=["Feature 1"])
-app.include_router(api_2.router, prefix="/api/v1/feature2", tags=["Feature 2"])
+app.include_router(ingest.router, prefix="/api/v1/feature2", tags=["Feature 2"])
 app.include_router(embed.router, prefix="/embed", tags=["Embed"])
 
 # ============= STATIC FILES (Vue SPA) =============
