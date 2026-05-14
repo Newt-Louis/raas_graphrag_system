@@ -1,0 +1,47 @@
+from pydantic_settings import BaseSettings, SettingsConfigDict
+from pathlib import Path
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    # App
+    APP_NAME: str = "GraphRAG System"
+    ENV: str = "development"  # development | production
+    DEBUG: bool = True
+
+    # Paths
+    BASE_DIR: Path = Path(__file__).parent.parent.parent
+    STATIC_DIR: Path = BASE_DIR / "app" / "static"
+    DATA_DIR: Path = BASE_DIR / "data"
+
+    # Database
+    POSTGRES_USER: str
+    POSTGRES_PASSWORD: str
+    POSTGRES_DB: str
+    POSTGRES_HOST: str = "localhost"
+    POSTGRES_PORT: int = 5432
+
+    @property
+    def DATABASE_URL(self) -> str:
+        return (
+            f"postgresql+psycopg2://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}"
+            f"@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
+        )
+
+    # Kùzu & LanceDB
+    KUZU_DB_PATH: Path = Path("data/kuzu/graph.db")
+    LANCEDB_PATH: Path = Path("data/lancedb")
+
+    # LLM
+    OPENAI_API_KEY: str = ""
+
+    # Security
+    SECRET_KEY: str
+    JWT_ALGORITHM: str = "HS256"
+
+    # CORS (cho việc embed iframe)
+    ALLOWED_ORIGINS: list[str] = ["*"]
+
+
+settings = Settings()
