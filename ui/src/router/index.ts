@@ -9,21 +9,37 @@ const router = createRouter({
       component: () => import('@/views/HomeView.vue'),
     },
     {
+      path: '/platform',
+      name: 'platform-admin',
+      component: () => import('@/views/PlatformAdminView.vue'),
+    },
+    {
+      path: '/admin/documents',
+      name: 'customer-documents',
+      component: () => import('@/views/DocumentAdminView.vue'),
+    },
+    {
+      path: '/admin/widget',
+      name: 'widget-builder',
+      component: () => import('@/views/WidgetBuilderView.vue'),
+    },
+    {
+      path: '/embed/chat',
+      name: 'embed-chat',
+      component: () => import('@/views/EmbedChatView.vue'),
+      meta: { embed: true },
+    },
+    {
       path: '/builder',
-      name: 'builder',
-      component: () => import('@/views/BuilderView.vue'),
+      redirect: '/admin/widget',
     },
     {
       path: '/embed/feature1',
-      name: 'embed-feature1',
-      component: () => import('@/views/Embed1View.vue'),
-      meta: { embed: true },
+      redirect: '/embed/chat',
     },
     {
       path: '/embed/feature2',
-      name: 'embed-feature2',
-      component: () => import('@/views/Embed2View.vue'),
-      meta: { embed: true },
+      redirect: '/embed/chat',
     },
   ],
 })
