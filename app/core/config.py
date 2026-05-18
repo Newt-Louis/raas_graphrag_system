@@ -14,6 +14,8 @@ class Settings(BaseSettings):
     BASE_DIR: Path = Path(__file__).parent.parent.parent
     STATIC_DIR: Path = BASE_DIR / "app" / "static"
     DATA_DIR: Path = BASE_DIR / "data"
+    DOCUMENT_UPLOAD_DIR: Path = DATA_DIR / "documents"
+    MAX_DOCUMENT_UPLOAD_MB: int = 100
 
     # Database
     POSTGRES_USER: str
