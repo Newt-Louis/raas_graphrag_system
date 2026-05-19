@@ -1,3 +1,4 @@
+import importlib
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -39,6 +40,30 @@ app.add_middleware(
 app.include_router(home.router, prefix="/api/v1/feature1", tags=["Feature 1"])
 app.include_router(ingest.router, prefix="/api/v1/documents", tags=["Documents"])
 app.include_router(embed.router, prefix="/embed", tags=["Embed"])
+
+def include_routers_automatically():
+    api_dir = Path(__file__).parent / "api"
+    base_module = f"{__package__}.api"
+
+    for version_dir in sorted(api_dir.iterdir()):
+        if not version_dir.is_dir() or version_dir.name.startswith("__"):
+            continue
+        version = version_dir.name
+        for file in sorted(version_dir.glob("*.py")):
+            if file.name.startswith("__"):
+                continue
+
+            module_name = f"{base_module}.{version}.{file.stem}"
+
+            try:
+                module = importlib.import_module(module_name)
+                if hasattr(module, "router"):
+                    app.include_router(module.router,prefix=f"/api/{version}")
+            except Exception as e:
+                print(f"⚠️ Không thể load route từ {file.name}: {e}")
+                raise
+
+include_routers_automatically()
 
 # ============= STATIC FILES (Vue SPA) =============
 STATIC_DIR = settings.STATIC_DIR

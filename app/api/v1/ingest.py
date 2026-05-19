@@ -18,8 +18,7 @@ from app.services.ingestion.parsers import (
     validate_document_file,
 )
 
-router = APIRouter()
-
+router = APIRouter(prefix="/ingest", tags=["ingest"])
 
 class DocumentIngestResponse(BaseModel):
     status: str = Field(examples=["ready"])
@@ -41,7 +40,7 @@ class SupportedFormatsResponse(BaseModel):
     blocked_image_extensions: list[str]
 
 
-@router.get("/formats", response_model=SupportedFormatsResponse)
+@router.get("", response_model=SupportedFormatsResponse)
 async def supported_formats() -> SupportedFormatsResponse:
     return SupportedFormatsResponse(
         allowed_extensions=sorted(ALLOWED_DOCUMENT_EXTENSIONS),
@@ -49,7 +48,7 @@ async def supported_formats() -> SupportedFormatsResponse:
     )
 
 
-@router.post("/ingest", response_model=DocumentIngestResponse, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=DocumentIngestResponse, status_code=status.HTTP_201_CREATED)
 async def ingest_document(
     tenant_id: str = Form(..., min_length=1),
     app_id: str = Form(..., min_length=1),
