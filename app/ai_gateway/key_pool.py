@@ -30,8 +30,22 @@ class KeyConfig:
     provider: str                 # "openai" | "gemini" | "groq" | "anthropic" ...
     model_name: str               # tên model litellm: "gemini/gemini-2.0-flash" ...
     api_key: str                  # ĐÃ giải mã (decrypt trước khi đưa vào đây)
+    capability: str = ""          # "llm" | "embedding"; profile sẽ điền nếu bỏ trống
     api_base: str | None = None   # cho endpoint tự host / OpenAI-compatible
+    endpoint_id: str | None = None
+    enabled: bool = True
+    locked: bool = False          # platform admin có thể khoá key/endpoint/model
+    lock_reason: str = ""
+    tenant_allowlist: set[str] = field(default_factory=set)
+    app_allowlist: set[str] = field(default_factory=set)
     extra: dict = field(default_factory=dict)  # tham số phụ tuỳ provider
+
+    def is_allowed_for(self, tenant_id: str | None, app_id: str | None) -> bool:
+        if self.tenant_allowlist and tenant_id not in self.tenant_allowlist:
+            return False
+        if self.app_allowlist and app_id not in self.app_allowlist:
+            return False
+        return True
 
 
 @dataclass(slots=True)
@@ -46,6 +60,10 @@ class KeyState:
 
     @property
     def is_available(self) -> bool:
+        if not self.config.enabled:
+            return False
+        if self.config.locked:
+            return False
         if self.status == KeyStatus.DISABLED:
             return False
         if self.status == KeyStatus.COOLDOWN and time.monotonic() < self.available_at:
@@ -90,6 +108,10 @@ class KeyPool:
     def available_now_count(self) -> int:
         return sum(1 for s in self._states if s.is_available)
 
+    @property
+    def locked_count(self) -> int:
+        return sum(1 for s in self._states if s.config.locked or not s.config.enabled)
+
     def next_available_at(self) -> float | None:
         """Mốc thời gian (monotonic) sớm nhất mà 1 key cooldown sẽ tỉnh dậy."""
         waking = [
@@ -113,8 +135,15 @@ class KeyPool:
                 return state
         raise PoolExhausted(
             f"Không còn key khả dụng. alive={self.alive_count}/{self.total}, "
-            f"available_now={self.available_now_count}"
+            f"available_now={self.available_now_count}, locked={self.locked_count}"
         )
+
+    def retry_next(self, state: KeyState) -> None:
+        """Đặt con trỏ để lần acquire kế tiếp ưu tiên đúng key vừa dùng."""
+        for idx, current in enumerate(self._states):
+            if current is state:
+                self._cursor = idx
+                return
 
     # ---- Cập nhật trạng thái sau mỗi lần gọi ------------------------------
     def report_success(self, state: KeyState) -> None:
@@ -149,7 +178,12 @@ class KeyPool:
                 "id": s.config.id,
                 "provider": s.config.provider,
                 "model": s.config.model_name,
+                "capability": s.config.capability,
+                "endpoint_id": s.config.endpoint_id,
                 "status": s.status.value,
+                "enabled": s.config.enabled,
+                "locked": s.config.locked,
+                "lock_reason": s.config.lock_reason,
                 "cooldown_remaining": max(0.0, s.available_at - now)
                 if s.status == KeyStatus.COOLDOWN else 0.0,
                 "success": s.success_count,

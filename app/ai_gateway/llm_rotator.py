@@ -15,7 +15,7 @@ from typing import Any
 
 from litellm import acompletion
 
-from .base_rotator import BaseRotator
+from .base_rotator import BaseRotator, ProviderCallResult, usage_to_dict
 from .key_pool import KeyState
 
 
@@ -48,6 +48,7 @@ class LLMRotator(BaseRotator):
 
         call_kwargs = {
             **self.default_params,
+            **key.config.extra,
             **kwargs,                       # override per-request thắng
             "model": key.config.model_name,
             "messages": messages,
@@ -57,9 +58,17 @@ class LLMRotator(BaseRotator):
             call_kwargs["api_base"] = key.config.api_base
 
         # Gọi litellm — lỗi sẽ được BaseRotator bắt và phân loại
+        return_raw = bool(call_kwargs.pop("return_raw", False))
         response = await acompletion(**call_kwargs)
+        if return_raw:
+            data: Any = response
+        else:
+            data = self._extract(response)
 
-        return self._extract(response)
+        return ProviderCallResult(
+            data=data,
+            usage=usage_to_dict(getattr(response, "usage", None)),
+        )
 
     # -----------------------------------------------------------------------
     def _extract(self, response: Any) -> Any:
@@ -74,8 +83,10 @@ class LLMRotator(BaseRotator):
         choice = response.choices[0]
         content = choice.message.content
         if content is None:
-            # Có thể là tool_calls — TODO: handle
-            raise ValueError("LLM trả về content rỗng (có thể là tool_calls chưa xử lý).")
+            tool_calls = getattr(choice.message, "tool_calls", None)
+            if tool_calls:
+                return {"content": None, "tool_calls": tool_calls}
+            raise ValueError("LLM trả về content rỗng.")
         return content
 
     # Tiện ích thường dùng cho RAG: ghép context vào messages
@@ -86,11 +97,6 @@ class LLMRotator(BaseRotator):
         history: list[dict] | None = None,
         system_prompt: str | None = None,
     ) -> list[dict]:
-        """
-        TODO(claude-cli): Đây là chỗ ráp prompt RAG.
-        Gợi ý cấu trúc: [system] + [history...] + [user: context + question].
-        Giữ system_prompt CHUNG một hướng nhiệm vụ cho mọi model (như yêu cầu).
-        """
         messages: list[dict] = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})

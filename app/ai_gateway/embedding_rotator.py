@@ -16,7 +16,7 @@ from typing import Any
 
 from litellm import aembedding
 
-from .base_rotator import BaseRotator
+from .base_rotator import BaseRotator, ProviderCallResult, usage_to_dict
 from .key_pool import KeyState
 
 
@@ -39,27 +39,58 @@ class EmbeddingRotator(BaseRotator):
       - Để None nếu chấp nhận mọi chiều (KHÔNG khuyến nghị cho production).
     """
 
-    def __init__(self, keys, *, expected_dim: int | None = None, **base_kwargs):
+    def __init__(
+        self,
+        keys,
+        *,
+        expected_dim: int | None = None,
+        default_params: dict | None = None,
+        max_batch_size: int | None = None,
+        **base_kwargs,
+    ):
         super().__init__(keys, **base_kwargs)
         self.expected_dim = expected_dim
+        self.default_params = {
+            "timeout": 60,
+            **(default_params or {}),
+        }
+        self.max_batch_size = max_batch_size
 
     async def _call(self, key: KeyState, **kwargs) -> Any:
         inputs = kwargs.pop("inputs")
+        if isinstance(inputs, str):
+            inputs = [inputs]
+        inputs = list(inputs or [])
         if not inputs:
             raise ValueError("EmbeddingRotator.run() cần tham số `inputs` (list[str]).")
+        if not all(isinstance(item, str) for item in inputs):
+            raise ValueError("Embedding inputs phải là list[str].")
+
+        default_batch_size = key.config.extra.get("embedding_batch_size", self.max_batch_size)
+        batch_size = int(kwargs.pop("batch_size", default_batch_size or len(inputs)))
+        if batch_size <= 0:
+            raise ValueError("batch_size phải lớn hơn 0.")
 
         call_kwargs = {
-            "model": key.config.model_name,
-            "input": inputs,
-            "api_key": key.config.api_key,
-            "timeout": kwargs.pop("timeout", 60),
+            **self.default_params,
+            **key.config.extra,
             **kwargs,
+            "model": key.config.model_name,
+            "api_key": key.config.api_key,
         }
+        call_kwargs.pop("embedding_batch_size", None)
         if key.config.api_base:
             call_kwargs["api_base"] = key.config.api_base
 
-        response = await aembedding(**call_kwargs)
-        return self._extract(response, expected_n=len(inputs))
+        vectors: list[list[float]] = []
+        usage: dict[str, Any] = {}
+        for start in range(0, len(inputs), batch_size):
+            batch = inputs[start:start + batch_size]
+            response = await aembedding(**{**call_kwargs, "input": batch})
+            vectors.extend(self._extract(response, expected_n=len(batch)))
+            usage = self._merge_usage(usage, usage_to_dict(getattr(response, "usage", None)))
+
+        return ProviderCallResult(data=vectors, usage=usage)
 
     # -----------------------------------------------------------------------
     def _extract(self, response: Any, expected_n: int) -> list[list[float]]:
@@ -70,8 +101,8 @@ class EmbeddingRotator(BaseRotator):
             TRƯỚC khi gọi (đừng để dính BadRequest rồi mới xử lý).
           - Cân nhắc giữ map index -> để chắc thứ tự vector khớp thứ tự inputs.
         """
-        items = sorted(response.data, key=lambda d: d.get("index", 0))
-        vectors = [d["embedding"] for d in items]
+        items = sorted(response.data, key=self._item_index)
+        vectors = [self._item_embedding(item) for item in items]
 
         if len(vectors) != expected_n:
             raise ValueError(
@@ -86,3 +117,24 @@ class EmbeddingRotator(BaseRotator):
                     f"KHÔNG trộn để tránh hỏng vector store."
                 )
         return vectors
+
+    def _item_index(self, item: Any) -> int:
+        if isinstance(item, dict):
+            return item.get("index", 0)
+        return getattr(item, "index", 0)
+
+    def _item_embedding(self, item: Any) -> list[float]:
+        if isinstance(item, dict):
+            return item["embedding"]
+        return item.embedding
+
+    def _merge_usage(self, current: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+        if not incoming:
+            return current
+        merged = dict(current)
+        for key, value in incoming.items():
+            if isinstance(value, (int, float)) and isinstance(merged.get(key), (int, float)):
+                merged[key] += value
+            else:
+                merged[key] = value
+        return merged

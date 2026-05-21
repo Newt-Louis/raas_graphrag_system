@@ -14,6 +14,7 @@ from __future__ import annotations
 import abc
 import asyncio
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -28,14 +29,28 @@ class RotationResult:
     success: bool
     data: Any = None
     used_key_id: str | None = None
+    used_provider: str | None = None
     used_model: str | None = None
+    used_endpoint_id: str | None = None
+    capability: str | None = None
+    profile_id: str | None = None
     attempts: int = 0
     verdicts: list[Verdict] = field(default_factory=list)  # lịch sử lỗi đã gặp
     final_reason: str = ""
+    usage: dict[str, Any] = field(default_factory=dict)
+    elapsed_ms: float = 0.0
 
     @property
     def last_verdict(self) -> Verdict | None:
         return self.verdicts[-1] if self.verdicts else None
+
+
+@dataclass(slots=True)
+class ProviderCallResult:
+    """Kết quả nội bộ của subclass: data trả cho caller + usage provider nếu có."""
+
+    data: Any
+    usage: dict[str, Any] = field(default_factory=dict)
 
 
 class AdminAlert(Exception):
@@ -43,6 +58,20 @@ class AdminAlert(Exception):
     def __init__(self, verdict: Verdict):
         self.verdict = verdict
         super().__init__(verdict.reason)
+
+
+def usage_to_dict(usage: Any) -> dict[str, Any]:
+    if usage is None:
+        return {}
+    if isinstance(usage, dict):
+        return dict(usage)
+    if hasattr(usage, "model_dump"):
+        return usage.model_dump()
+    if hasattr(usage, "dict"):
+        return usage.dict()
+    keys = ("prompt_tokens", "completion_tokens", "total_tokens")
+    data = {key: getattr(usage, key) for key in keys if hasattr(usage, key)}
+    return data
 
 
 class BaseRotator(abc.ABC):
@@ -63,12 +92,18 @@ class BaseRotator(abc.ABC):
         max_retry_same: int = 2,
         wait_for_cooldown: bool = True,
         max_cooldown_wait: float = 65.0,
+        profile_id: str | None = None,
+        capability: str | None = None,
+        raise_admin_alerts: bool = False,
     ):
         self.pool = KeyPool(keys)
         self.max_attempts = max_attempts
         self.max_retry_same = max_retry_same
         self.wait_for_cooldown = wait_for_cooldown
         self.max_cooldown_wait = max_cooldown_wait
+        self.profile_id = profile_id
+        self.capability = capability
+        self.raise_admin_alerts = raise_admin_alerts
 
     # -----------------------------------------------------------------------
     # PHẦN SUBCLASS PHẢI CÀI ĐẶT
@@ -92,50 +127,64 @@ class BaseRotator(abc.ABC):
     # VÒNG LẶP CHÍNH
     # -----------------------------------------------------------------------
     async def run(self, **kwargs) -> RotationResult:
-        result = RotationResult(success=False)
+        started = time.perf_counter()
+        result = RotationResult(
+            success=False,
+            profile_id=self.profile_id,
+            capability=self.capability,
+        )
         retry_same_count = 0
 
-        while result.attempts < self.max_attempts:
-            # 1) Lấy key khả dụng (xử lý trường hợp pool cạn vì cooldown)
-            try:
-                key = self.pool.acquire()
-            except PoolExhausted as exc:
-                waited = await self._maybe_wait_for_cooldown()
-                if waited:
-                    continue
-                result.final_reason = f"Hết key khả dụng: {exc}"
-                logger.error(result.final_reason)
-                return result
-
-            result.attempts += 1
-
-            # 2) Gọi API thật
-            try:
-                data = await self._call(key, **kwargs)
-                self.pool.report_success(key)
-                result.success = True
-                result.data = data
-                result.used_key_id = key.config.id
-                result.used_model = key.config.model_name
-                return result
-
-            # 3) Có lỗi -> phân loại -> áp dụng Verdict
-            except Exception as exc:  # noqa: BLE001 - cố ý bắt rộng rồi phân loại
-                verdict = classify_error(exc)
-                result.verdicts.append(verdict)
-
-                if verdict.notify_admin:
-                    await self._on_admin_notify(key, verdict)
-
-                retry_same_count = await self._apply_verdict(
-                    key, verdict, retry_same_count, result
-                )
-                if result.final_reason:  # _apply_verdict ra lệnh dừng
+        try:
+            while result.attempts < self.max_attempts:
+                # 1) Lấy key khả dụng (xử lý trường hợp pool cạn vì cooldown)
+                try:
+                    key = self.pool.acquire()
+                except PoolExhausted as exc:
+                    waited = await self._maybe_wait_for_cooldown()
+                    if waited:
+                        continue
+                    result.final_reason = f"Hết key khả dụng: {exc}"
+                    logger.error(result.final_reason)
                     return result
 
-        result.final_reason = f"Vượt quá max_attempts={self.max_attempts}."
-        logger.error(result.final_reason)
-        return result
+                result.attempts += 1
+
+                # 2) Gọi API thật
+                try:
+                    call_result = await self._call(key, **kwargs)
+                    self.pool.report_success(key)
+                    result.success = True
+                    if isinstance(call_result, ProviderCallResult):
+                        result.data = call_result.data
+                        result.usage = call_result.usage
+                    else:
+                        result.data = call_result
+                    result.used_key_id = key.config.id
+                    result.used_provider = key.config.provider
+                    result.used_model = key.config.model_name
+                    result.used_endpoint_id = key.config.endpoint_id
+                    return result
+
+                # 3) Có lỗi -> phân loại -> áp dụng Verdict
+                except Exception as exc:  # noqa: BLE001 - cố ý bắt rộng rồi phân loại
+                    verdict = classify_error(exc)
+                    result.verdicts.append(verdict)
+
+                    if verdict.notify_admin:
+                        await self._on_admin_notify(key, verdict)
+
+                    retry_same_count = await self._apply_verdict(
+                        key, verdict, retry_same_count, result
+                    )
+                    if result.final_reason:  # _apply_verdict ra lệnh dừng
+                        return result
+
+            result.final_reason = f"Vượt quá max_attempts={self.max_attempts}."
+            logger.error(result.final_reason)
+            return result
+        finally:
+            result.elapsed_ms = round((time.perf_counter() - started) * 1000, 3)
 
     # -----------------------------------------------------------------------
     # ÁP DỤNG VERDICT — bảng quyết định trung tâm
@@ -158,8 +207,8 @@ class BaseRotator(abc.ABC):
             if retry_same_count < self.max_retry_same:
                 if verdict.retry_after:
                     await asyncio.sleep(verdict.retry_after)
-                # KHÔNG advance cursor: ép acquire() trả lại đúng key này lần sau
-                self.pool._cursor = (self.pool._cursor - 1) % self.pool.total
+                # KHÔNG advance cursor: ép acquire() trả lại đúng key này lần sau.
+                self.pool.retry_next(key)
                 self.pool.note_failure(key)
                 return retry_same_count + 1
             # Hết lượt retry cùng key -> coi như xoay sang key khác
@@ -186,7 +235,9 @@ class BaseRotator(abc.ABC):
         if action is ErrorAction.ABORT_ADMIN:
             # Lỗi cấu hình -> dừng ngay, đừng đốt thêm key.
             result.final_reason = f"Cần admin xử lý: {verdict.reason}"
-            raise AdminAlert(verdict)
+            if self.raise_admin_alerts:
+                raise AdminAlert(verdict)
+            return retry_same_count
 
         # Không nên tới đây
         result.final_reason = f"Action không xác định: {action}"

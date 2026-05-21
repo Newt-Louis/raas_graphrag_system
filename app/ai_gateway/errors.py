@@ -84,6 +84,15 @@ def classify_error(exc: Exception) -> Verdict:
     raw = _trim(exc)
     text = _msg(exc)
 
+    if exc.__class__.__name__ == "EmbeddingDimensionMismatch":
+        return Verdict(
+            ErrorAction.ABORT_ADMIN,
+            reason="Embedding model trả vector khác chiều với index hiện tại.",
+            notify_admin=True,
+            permanent=True,
+            raw=raw,
+        )
+
     # ---- NHÓM 4: Lỗi REQUEST cấp con của BadRequest (xoay key vô ích) ----------
     if isinstance(exc, litellm.ContextWindowExceededError):
         # Input vượt context window. Đổi key KHÔNG cứu được.
