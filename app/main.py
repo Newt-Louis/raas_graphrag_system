@@ -1,14 +1,11 @@
 import importlib
 from contextlib import asynccontextmanager
 from pathlib import Path
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-
 from app.core.config import settings
-from app.api.v1 import home, ingest, embed
 
 
 @asynccontextmanager
@@ -37,10 +34,6 @@ app.add_middleware(
 )
 
 # ============= API ROUTES =============
-app.include_router(home.router, prefix="/api/v1/feature1", tags=["Feature 1"])
-app.include_router(ingest.router, prefix="/api/v1/documents", tags=["Documents"])
-app.include_router(embed.router, prefix="/embed", tags=["Embed"])
-
 def include_routers_automatically():
     api_dir = Path(__file__).parent / "api"
     base_module = f"{__package__}.api"

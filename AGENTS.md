@@ -29,13 +29,17 @@ Ba nhom trai nghiem chinh:
 
 ## Hien Trang Source
 
-Repo hien tai la khung ban dau:
+Repo hien tai la khung dang hinh thanh thanh cac lop nen tang:
 
 - Backend FastAPI:
-  - Entry point: `main.py`
+  - Entry point: `app/main.py`
   - Cau hinh: `app/core/config.py`
   - API hien co: `app/api/v1/home.py`, `app/api/v1/ingest.py`, `app/api/v1/embed.py`
-  - Cac package `app/db`, `app/services`, `alembic`, `scripts`, `test` dang ton tai nhu thu muc nhung chua co implementation dang ke.
+  - AI Gateway: `app/ai_gateway/` da co loi xoay vong key/model qua `BaseRotator`, `KeyPool`, `EmbeddingRotator`, `LLMRotator`, va `errors.py`.
+  - GraphRAG: `app/graphrag/` la noi dieu phoi ingestion/query pipeline, retrieval context, prompt, va goi embedding/LLM thong qua AI Gateway.
+  - Services: `app/services/` la noi chua logic nghiep vu that, hien co nhom `app/services/ingestion/` cho document pipeline.
+  - Core: `app/core/` gom config, logging, security, exceptions, middleware/lifespan cua ung dung.
+  - `app/models`, `app/schemas`, `app/repositories` dung de tach model/payload/persistence khi he thong lon hon.
 - Frontend Vue/Vite:
   - Thu muc: `ui/`
   - Entry point: `ui/src/main.ts`
@@ -75,6 +79,69 @@ Thiet ke theo GraphRAG-as-a-Service da-tenant:
   - Job status/progress.
 - Nen dat business logic trong `app/services/`, persistence trong `app/db/`, API schema/model rieng khi du an bat dau lon hon.
 
+## Kien Truc Lop He Thong
+
+Tu giai doan nay, he thong duoc phat trien theo ranh gioi lop ro rang:
+
+- `app/core/`: lop nen tang cua app. Chi chua config, logging, security, middleware, exception mapping, lifespan, dependency chung. Khong dat logic xoay vong provider, GraphRAG retrieval, hay nghiep vu tenant/chat/document vao core.
+- `app/ai_gateway/`: lop dieu phoi AI provider. Tra loi cac cau hoi: dung provider nao, dung key nao, key con quota khong, co bi rate limit khong, loi nay retry/xoay/dung, ghi usage ra sao, endpoint/model nao bi khoa. Lop nay khong quyet dinh tenant co quyen chat hay khong va khong dung prompt GraphRAG.
+- `app/graphrag/`: lop GraphRAG engine/pipeline. Tra loi cac cau hoi: can embedding van ban nao, lay context nao tu vector/graph, prompt can lap ghep the nao, can LLM sinh cau tra loi the nao. Lop nay goi AI Gateway de thuc thi embedding/LLM, nhung khong tu chon key, tu xu ly quota, hay tu retry provider.
+- `app/services/`: lop nghiep vu san pham. Tra loi cac cau hoi: tenant/app nao dang goi, session nao, user/admin co quyen khong, luu lich su chat o dau, document lifecycle di qua cac trang thai nao, API nen tra response/schema nao. Services co the goi GraphRAG, AI Gateway, repositories, va core dependencies.
+- `app/repositories/` hoac `app/db/`: lop persistence. Chi doc/ghi database, cache, vector/graph metadata theo interface ro rang. Khong chua business workflow dai.
+- `app/api/v1/`: lop HTTP adapter. Router nen mong: validate request, lay dependency/auth context, goi service, tra schema. Khong dat logic xoay key, retrieval, prompt, document pipeline truc tiep trong router.
+
+Luon giu mot chieu phu thuoc de tranh tron trach nhiem: API -> Services -> GraphRAG/AI Gateway/Repositories -> Core utilities. GraphRAG co the dung AI Gateway de goi model; AI Gateway khong phu thuoc nguoc vao GraphRAG hoac Services.
+
+## Ranh Gioi AI Gateway
+
+`app/ai_gateway/` la loi he thong can hoan thien dau tien de co the nap nhieu API key/model va test that qua trang admin. Khi sua lop nay, giu cac quy uoc sau:
+
+- AI Gateway chi nhan cac `KeyConfig`/model profile da duoc service/repository nap vao. Neu key luu trong DB thi phai decrypt truoc khi dua vao gateway; gateway khong hard-code secret va khong log secret.
+- `BaseRotator` giu logic chung: acquire key, goi subclass, classify error, retry same key, rotate key, cooldown, disable, abort/admin notify, va tra `RotationResult`.
+- `errors.py` la bang quyet dinh trung tam cho loi provider/litellm. Khi them provider/model moi, uu tien mo rong classify error tai day thay vi rai logic try/except trong tung service.
+- `KeyPool` la runtime pool tach khoi DB. Trang thai DB/Redis ve quota, cooldown, disabled, usage, endpoint lock se duoc map vao/ra pool boi service/repository rieng.
+- Phai tach 2 loai pool/rotator:
+  - **Embedding AI API pool**: dung cho embedding document chunks va embedding query. Dung `EmbeddingRotator`. Phai rang buoc model/dimension/index profile ro rang; khong duoc xoay sang model embedding khac chieu voi LanceDB/vector index dang dung. Ho tro batch input va batch-size theo provider.
+  - **LLM AI API pool**: dung cho sinh cau tra loi, synthesis, reranking LLM neu co, tool/structured output neu sau nay can. Dung `LLMRotator`. Quan ly generation params nhu temperature, max tokens, timeout, streaming/tool calling theo request/profile.
+- Khong tron key embedding va key LLM trong cung mot pool. Mot provider co the co ca embedding va LLM key, nhung runtime profile phai tach theo `capability`/`model_type`: `embedding` hoac `llm`.
+- Quota/usage can duoc ghi theo toi thieu: provider, key_id, model, capability, tenant/app neu request co scope, endpoint, token/input count neu co, latency, success/error verdict.
+- Endpoint/model lock la chinh sach cua Platform Admin: admin co the khoa provider, key, model, endpoint, capability, hoac tenant/app mapping. Gateway phai ton trong lock truoc khi acquire key.
+- Neu gap loi cau hinh can admin can thiep, gateway phai noi len platform admin dashboard thay vi am tham retry vo han.
+
+## Ranh Gioi GraphRAG
+
+GraphRAG khong phai noi quan ly key/provider. GraphRAG chi nen nam cac quyet dinh lien quan chat voi tai lieu:
+
+- Tao embedding cho document chunks va query bang cach goi embedding profile cua AI Gateway.
+- Doc context tu LanceDB/vector store va Kuzu/graph store theo tenant/app/document scope.
+- Lap prompt/system instruction theo cau hoi, retrieved context, chat history, policy cua app, va citation/source metadata.
+- Goi LLM profile qua AI Gateway de sinh cau tra loi.
+- Neu khong co context, document chua ready, hoac retrieval fail, tra trang thai ro rang cho service de API khong hallucinate.
+- Prompt/retrieval/reranking/synthesis nam trong `app/graphrag/` hoac service GraphRAG chuyen biet; khong dua vao AI Gateway.
+
+## Ranh Gioi Services
+
+Services la noi bieu dien nghiep vu GraphRAG-aaS va la lop ket noi cac he thong con:
+
+- Xac dinh tenant/app/session/user/admin context tu API key, JWT claim, route scope, hoac dependency.
+- Kiem tra quyen: platform operator, customer admin, end user.
+- Quan ly document lifecycle: upload, parse, chunk, deduplicate, index, re-index, archive/delete, job status/progress.
+- Quan ly chat session/history, audit log, rate limit theo tenant/app/end user neu can.
+- Chon model profile/capability duoc phep cho tenant/app roi truyen danh sach key/model hop le vao AI Gateway.
+- Dinh nghia response API va loi domain ro rang cho frontend/API client.
+
+## Platform Admin Va Cau Hinh AI
+
+Platform Admin UI/API la noi van hanh noi bo cua GraphRAG-as-a-Service. Khi bat dau them admin cho bo xoay vong API, uu tien cac nang luc sau:
+
+- Quan ly provider/model profile theo `capability`: `embedding` va `llm`.
+- Quan ly encrypted API keys, trang thai active/cooldown/disabled, quota, endpoint/model lock, allowed tenant/app mapping.
+- Xem usage, latency, success/fail, verdict/reason, key health snapshot, va canh bao can admin xu ly.
+- Test call rieng cho embedding va LLM de xac minh key/model truoc khi dung cho ingestion/chat.
+- Cau hinh default model profile cho ingestion embedding, query embedding, chat synthesis, va cac tac vu phu nhu rerank neu co.
+
+Customer Admin UI khong duoc quan ly provider key noi bo cua platform. Customer Admin chi quan ly tai lieu, ingestion status, va widget/chat config trong tenant/app cua ho.
+
 ## Backend Quy Uoc
 
 - Framework hien tai: FastAPI + Pydantic Settings.
@@ -84,7 +151,7 @@ Thiet ke theo GraphRAG-as-a-Service da-tenant:
 - Dung response/request schema ro rang cho API public; tranh nhan tham so quan trong bang query string tuy tien neu body/schema phu hop hon.
 - API chat public khong nen nhan raw `file_path` tu client. File path noi bo phai duoc quan ly boi document service.
 - Khi can chay backend local:
-  - `uvicorn main:app --reload`
+  - `uvicorn app.main:app --reload`
 - Khi can ha tang local:
   - `docker compose up -d`
 
@@ -151,7 +218,7 @@ Cac lenh kiem tra co san/hop ly:
 - Frontend type check/build:
   - `cd ui && npm run build`
 - Backend smoke run:
-  - `uvicorn main:app --reload`
+  - `uvicorn app.main:app --reload`
 - Ha tang local:
   - `docker compose up -d`
 
@@ -167,4 +234,3 @@ Neu them tool moi nhu pytest, ruff, alembic migrations, hay task queue, cap nhat
 - Khi sua backend, dam bao router prefix/path hop le; tranh loi path thieu dau `/`.
 - Khong dua secret vao code, log, fixture, hoac AGENTS.md.
 - Neu yeu cau lien quan OpenAI/API/model moi nhat, phai kiem tra tai lieu chinh thuc truoc khi ket luan.
-
