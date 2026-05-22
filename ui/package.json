@@ -12,10 +12,13 @@
     "format": "prettier --write --experimental-cli src/"
   },
   "dependencies": {
+    "@primevue/themes": "^4.5.4",
     "@vueuse/core": "^14.3.0",
     "axios": "^1.16.1",
     "interactjs": "^1.10.27",
     "pinia": "^3.0.4",
+    "primeicons": "^7.0.0",
+    "primevue": "^4.5.5",
     "vue": "beta",
     "vue-router": "^5.0.4",
     "vuedraggable": "^2.24.3"

@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRoute } from 'vue-router'
+import { useThemePreference } from './composables/useThemePreference'
 
 const route = useRoute()
+useThemePreference()
 const isEmbedRoute = computed(() => route.meta.embed === true)
 </script>
 
@@ -21,7 +23,7 @@ const isEmbedRoute = computed(() => route.meta.embed === true)
 
       <nav class="nav-links">
         <RouterLink to="/">Overview</RouterLink>
-        <RouterLink to="/platform">Platform admin</RouterLink>
+        <RouterLink to="/platform">System admin</RouterLink>
         <RouterLink to="/admin/documents">Documents</RouterLink>
         <RouterLink to="/admin/widget">Widget builder</RouterLink>
         <RouterLink to="/embed/chat">Embed chat</RouterLink>

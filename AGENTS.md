@@ -1,75 +1,105 @@
 # AGENTS.md
 
-Huong dan nay ap dung cho toan bo repository `raas_graphrag_system`. Moi lan Codex lam viec trong du an nay, hay doc file nay truoc khi suy luan ve kien truc, dat ten API, thiet ke UI, hoac them chuc nang.
+Hướng dẫn này áp dụng cho toàn bộ repository `raas_graphrag_system`. Mỗi lần Codex làm việc trong dự án này, hãy đọc file này trước khi suy luận về kiến trúc, đặt tên API, thiết kế UI, hoặc thêm chức năng.
 
-## Tong Quan San Pham
+## Tổng Quan Sản Phẩm
 
-Du an nay la mot he thong **GraphRAG-as-a-Service**, khong phai mot ung dung GraphRAG don le cho mot san pham cu the.
+Dự án này là một hệ thống **GraphRAG-as-a-Service**, không phải một ứng dụng GraphRAG đơn lẻ cho một sản phẩm cụ thể.
 
-He thong cung cap nen tang GraphRAG da-tenant cho nhieu phan mem ben ngoai tich hop. Moi phan mem/khach hang co tai lieu, cau hinh model, cau hinh giao dien chat, khoa API, vong doi tai lieu, va ngu canh truy van rieng. Khi thiet ke tinh nang moi, luon uu tien ranh gioi tenant, bao mat du lieu, kha nang mo rong API, va kha nang nhung giao dien vao san pham ben thu ba.
+Hệ thống cung cấp nền tảng GraphRAG đa tenant cho nhiều phần mềm bên ngoài tích hợp. Mỗi phần mềm/khách hàng có tài liệu, cấu hình model, cấu hình giao diện chat, khóa API, vòng đời tài liệu, quota, và ngữ cảnh truy vấn riêng. Khi thiết kế tính năng mới, luôn ưu tiên ranh giới tenant, bảo mật dữ liệu, khả năng mở rộng API, khả năng vận hành nhiều provider/model, và khả năng nhúng giao diện vào sản phẩm bên thứ ba.
 
-Ba nhom trai nghiem chinh:
+Ba nhóm trải nghiệm chính:
 
-1. **Chat API + embeddable chat UI cho nguoi dung cuoi cua khach hang**
-   - Cho phep nguoi dung cuoi chat voi he thong dua tren bo tai lieu ma phan mem/khach hang da cung cap.
-   - UI chat do he thong nay cung cap de nhung vao san pham ben ngoai, vi du iframe/script/widget.
-   - Chat phai duoc rang buoc theo tenant/app/document collection, khong duoc ro ri ngu canh giua cac khach hang.
+1. **Chat API + embeddable chat UI cho người dùng cuối của khách hàng**
+   - Cho phép người dùng cuối chat với hệ thống dựa trên bộ tài liệu mà phần mềm/khách hàng đã cung cấp.
+   - UI chat do hệ thống này cung cấp để nhúng vào sản phẩm bên ngoài, ví dụ iframe/script/widget.
+   - Chat phải được ràng buộc theo tenant/app/document collection, không được rò rỉ ngữ cảnh giữa các khách hàng.
 
-2. **Document Admin API + UI cho admin cua khach hang**
-   - Cho phep admin ben khach hang upload, quan ly, cap nhat, xoa, re-index, xem trang thai xu ly va vong doi tai lieu.
-   - Sau khi tai lieu duoc nap, he thong thuc hien pipeline GraphRAG: parse, chunk, extract entities/relations, embed, luu graph/vector metadata, va san sang cho API chat.
-   - UI admin cua khach hang can co it nhat hai tab/phan lon:
-     - Quan ly tai lieu.
-     - Quan ly giao dien chat embeddable: vi tri, kich thuoc, mau sac, popup, hanh vi hien thi, kieu khung chat, v.v.
+2. **Document Admin API + UI cho admin của khách hàng**
+   - Cho phép admin bên khách hàng upload, quản lý, cập nhật, xóa, re-index, xem trạng thái xử lý và vòng đời tài liệu.
+   - Sau khi tài liệu được nạp, hệ thống thực hiện pipeline GraphRAG: parse, chunk, trích xuất entities/relations, embed, lưu graph/vector metadata, và sẵn sàng cho API chat.
+   - UI admin của khách hàng cần có ít nhất hai tab/phần lớn:
+     - Quản lý tài liệu.
+     - Quản lý giao diện chat embeddable: vị trí, kích thước, màu sắc, popup, hành vi hiển thị, kiểu khung chat, v.v.
 
-3. **Platform Admin UI cho nguoi van hanh he thong cua ta**
-   - Quan ly phan mem/khach hang dang ky su dung he thong.
-   - Quan ly API key, model provider/model, cau hinh LLM/embedding, quota, trang thai tenant/app.
-   - Day la trang quan tri noi bo cua he thong GraphRAG-as-a-Service, khac voi UI admin cua khach hang.
+3. **Platform Admin UI cho người vận hành hệ thống của ta**
+   - Quản lý tenant/app đang sử dụng hệ thống.
+   - Quản lý provider/model, API key, endpoint, pool xoay vòng, quota, trạng thái tenant/app, và cảnh báo vận hành.
+   - Đây là trang quản trị nội bộ của hệ thống GraphRAG-as-a-Service, khác với UI admin của khách hàng.
 
-## Hien Trang Source
+## Hiện Trạng Source
 
-Repo hien tai la khung dang hinh thanh thanh cac lop nen tang:
+Repo hiện tại đã tách rõ hơn thành các lõi nền tảng:
 
 - Backend FastAPI:
-  - Entry point: `app/main.py`
-  - Cau hinh: `app/core/config.py`
-  - API hien co: `app/api/v1/home.py`, `app/api/v1/ingest.py`, `app/api/v1/embed.py`
-  - AI Gateway: `app/ai_gateway/` da co loi xoay vong key/model qua `BaseRotator`, `KeyPool`, `EmbeddingRotator`, `LLMRotator`, va `errors.py`.
-  - GraphRAG: `app/graphrag/` la noi dieu phoi ingestion/query pipeline, retrieval context, prompt, va goi embedding/LLM thong qua AI Gateway.
-  - Services: `app/services/` la noi chua logic nghiep vu that, hien co nhom `app/services/ingestion/` cho document pipeline.
-  - Core: `app/core/` gom config, logging, security, exceptions, middleware/lifespan cua ung dung.
-  - `app/models`, `app/schemas`, `app/repositories` dung de tach model/payload/persistence khi he thong lon hon.
+  - Entry point: `app/main.py`.
+  - Cấu hình: `app/core/config.py`.
+  - Router hiện có được auto-include từ `app/api/v1/*.py` với prefix `/api/v1`.
+  - API hiện có: `app/api/v1/home.py`, `app/api/v1/ingest.py`, `app/api/v1/chat.py`, `app/api/v1/embed.py`.
+  - `home.py` và các route `feature1/feature2` trong embed vẫn là placeholder; khi mở rộng, ưu tiên tên domain thật.
+- AI Gateway:
+  - Thư mục: `app/ai_gateway/`.
+  - Đã có lõi xoay vòng API qua `AIGateway`, `BaseRotator`, `KeyPool`, `EmbeddingRotator`, `LLMRotator`, `ModelProfile`, `GatewayRequestContext`, `UsageRecord`, và `errors.py`.
+  - Đây là lõi cần hoàn thiện trước để có model embedding/LLM thật phục vụ test GraphRAG.
+- GraphRAG:
+  - Thư mục: `app/graphrag/`.
+  - `GraphRAGAIClient` đã tồn tại để GraphRAG gọi embedding/LLM qua AI Gateway.
+  - `engine.py`, `ingestion_pipeline.py`, và `query_pipeline.py` hiện vẫn là placeholder rỗng; chưa được coi là implementation GraphRAG hoàn chỉnh.
+- Services:
+  - `app/services/ingestion/`: document parsing/chunking/deduplication/fanout records.
+  - `app/services/vector/`: embedding local hashing cho dev/test, LanceDB vector store, in-memory vector store cho unit test.
+  - `app/services/retrieval/`: retrieval orchestrator hiện đang vector-only để sau này gắn hybrid vector + graph.
+- Database/model:
+  - `app/db/base.py`, `app/db/session.py`: SQLAlchemy base/session.
+  - `app/models/platform.py`: platform users, tenants, customer apps.
+  - `app/models/documents.py`: documents và ingestion jobs.
+  - `app/models/ai_gateway.py`: provider, API key, model catalog, LLM rotation pools/profiles, embedding rotation pools/profiles, usage events.
+  - Chưa thấy migration Alembic hoàn chỉnh tương ứng với toàn bộ model mới; nếu thêm/sửa DB schema thì cần xử lý migration thay vì chỉ sửa model.
+- Core:
+  - `app/core/config.py` đã có config DB, path runtime, LanceDB/vector, embedding local, CORS.
+  - `app/core/lifespan.py`, `logging.py`, `security.py`, `exceptions.py` hiện còn rỗng hoặc rất nhẹ; không giả định chúng đã có middleware/auth/logging production.
 - Frontend Vue/Vite:
-  - Thu muc: `ui/`
-  - Entry point: `ui/src/main.ts`
-  - Root component: `ui/src/App.vue`
-  - Router: `ui/src/router/index.ts`
-  - Theme variables: `ui/src/styles/theme.css`
-  - Embed config composable: `ui/src/composables/useEmbedConfig.ts`
+  - Thư mục: `ui/`.
+  - Entry point: `ui/src/main.ts`.
+  - Root component: `ui/src/App.vue`.
+  - Router: `ui/src/router/index.ts`.
+  - Theme variables: `ui/src/styles/theme.css`.
+  - Embed config composable: `ui/src/composables/useEmbedConfig.ts`.
 - Storage/runtime:
-  - PostgreSQL va Redis trong `docker-compose.yml`.
+  - PostgreSQL và Redis trong `docker-compose.yml`.
   - Kuzu graph DB path: `data/kuzu/graph.db`.
   - LanceDB path: `data/lancedb`.
-  - Data/documents duoc gitignore va khong nen commit.
+  - Data/documents, graph DB, vector DB, cache, logs là runtime data và không nên commit.
 - Static frontend build:
   - `ui/vite.config.ts` build Vue ra `app/static`.
-  - FastAPI mount `/assets` va fallback SPA tu `app/static/index.html`.
+  - FastAPI mount `/assets` và fallback SPA từ `app/static/index.html`.
 
-Luu y quan trong: cac ten route hien tai nhu `feature1`, `feature2`, `Embed1View`, `Embed2View` chi la placeholder. Khi mo rong san pham, uu tien dat ten theo domain that: `chat`, `documents`, `tenants`, `apps`, `admin`, `embed`, `widget`, `ingestion`.
+Lưu ý quan trọng: các tên route cũ như `feature1`, `feature2`, hoặc code demo trong `home.py` chỉ là placeholder. Khi mở rộng sản phẩm, ưu tiên đặt tên theo domain thật: `chat`, `documents`, `tenants`, `apps`, `platform`, `admin`, `embed`, `widget`, `ingestion`, `ai-gateway`, `model-profiles`.
 
-## Huong Kien Truc Can Giu
+## Ưu Tiên Kiến Trúc Hiện Tại
 
-Thiet ke theo GraphRAG-as-a-Service da-tenant:
+Giai đoạn hiện tại ưu tiên hoàn thiện **lõi API xoay vòng model** trước khi dựng sâu GraphRAG. Lý do: nếu chưa có cơ chế gọi embedding/LLM thật, kiểm tra GraphRAG sẽ chỉ là kiểm tra giả lập và không phản ánh được quota, lỗi provider, model dimension, latency, và fallback runtime.
 
-- Moi request quan trong can co ngu canh tenant/app ro rang, vi du `tenant_id`, `app_id`, API key, JWT claim, hoac scoped route.
-- Khong viet logic mac dinh nhu the chi co mot bo tai lieu toan cuc.
-- Khong tron data cua platform admin, customer admin, va end-user chat.
-- API phai co ranh gioi quyen:
-  - Platform operator: quan ly tenant/app/provider/model/API key.
-  - Customer admin: quan ly tai lieu va cau hinh widget cua app minh.
-  - End user: chi chat voi ngu canh duoc phep cua app/tenant do.
-- GraphRAG pipeline nen tach service:
+Thứ tự ưu tiên hợp lý:
+
+1. Hoàn thiện AI Gateway cho hai capability tách biệt: `embedding` và `llm`.
+2. Hoàn thiện Platform Admin/API để cấu hình provider, model, API key, endpoint, pool, lock, quota, usage, và test call.
+3. Nối ingestion/query embedding vào embedding gateway theo profile đúng chiều vector.
+4. Nối chat synthesis/rerank/tool/structured output vào LLM gateway.
+5. Sau khi có gateway test được, mới mở rộng GraphRAG engine, graph retrieval, reranking, synthesis, citation, và hybrid retrieval.
+
+## Hướng Kiến Trúc Cần Giữ
+
+Thiết kế theo GraphRAG-as-a-Service đa tenant:
+
+- Mỗi request quan trọng cần có ngữ cảnh tenant/app rõ ràng, ví dụ `tenant_id`, `app_id`, API key, JWT claim, hoặc scoped route.
+- Không viết logic mặc định như thể chỉ có một bộ tài liệu toàn cục.
+- Không trộn data của platform admin, customer admin, và end-user chat.
+- API phải có ranh giới quyền:
+  - Platform operator: quản lý tenant/app/provider/model/API key/pool/quota/lock.
+  - Customer admin: quản lý tài liệu và cấu hình widget của app mình.
+  - End user: chỉ chat với ngữ cảnh được phép của app/tenant đó.
+- GraphRAG pipeline nên tách service:
   - Upload/document lifecycle.
   - Parsing/chunking.
   - Entity/relation extraction.
@@ -77,160 +107,185 @@ Thiet ke theo GraphRAG-as-a-Service da-tenant:
   - Graph storage/query.
   - Retrieval/reranking/synthesis.
   - Job status/progress.
-- Nen dat business logic trong `app/services/`, persistence trong `app/db/`, API schema/model rieng khi du an bat dau lon hon.
+- Business logic nên nằm trong `app/services/`, persistence trong `app/db/`/`app/repositories/`, API schema/model riêng khi dự án lớn hơn.
 
-## Kien Truc Lop He Thong
+## Kiến Trúc Lớp Hệ Thống
 
-Tu giai doan nay, he thong duoc phat trien theo ranh gioi lop ro rang:
+Từ giai đoạn này, hệ thống được phát triển theo ranh giới lớp rõ ràng:
 
-- `app/core/`: lop nen tang cua app. Chi chua config, logging, security, middleware, exception mapping, lifespan, dependency chung. Khong dat logic xoay vong provider, GraphRAG retrieval, hay nghiep vu tenant/chat/document vao core.
-- `app/ai_gateway/`: lop dieu phoi AI provider. Tra loi cac cau hoi: dung provider nao, dung key nao, key con quota khong, co bi rate limit khong, loi nay retry/xoay/dung, ghi usage ra sao, endpoint/model nao bi khoa. Lop nay khong quyet dinh tenant co quyen chat hay khong va khong dung prompt GraphRAG.
-- `app/graphrag/`: lop GraphRAG engine/pipeline. Tra loi cac cau hoi: can embedding van ban nao, lay context nao tu vector/graph, prompt can lap ghep the nao, can LLM sinh cau tra loi the nao. Lop nay goi AI Gateway de thuc thi embedding/LLM, nhung khong tu chon key, tu xu ly quota, hay tu retry provider.
-- `app/services/`: lop nghiep vu san pham. Tra loi cac cau hoi: tenant/app nao dang goi, session nao, user/admin co quyen khong, luu lich su chat o dau, document lifecycle di qua cac trang thai nao, API nen tra response/schema nao. Services co the goi GraphRAG, AI Gateway, repositories, va core dependencies.
-- `app/repositories/` hoac `app/db/`: lop persistence. Chi doc/ghi database, cache, vector/graph metadata theo interface ro rang. Khong chua business workflow dai.
-- `app/api/v1/`: lop HTTP adapter. Router nen mong: validate request, lay dependency/auth context, goi service, tra schema. Khong dat logic xoay key, retrieval, prompt, document pipeline truc tiep trong router.
+- `app/core/`: lớp nền tảng của app. Chỉ chứa config, logging, security, middleware, exception mapping, lifespan, dependency chung. Không đặt logic xoay vòng provider, GraphRAG retrieval, hay nghiệp vụ tenant/chat/document vào core.
+- `app/ai_gateway/`: lớp điều phối AI provider/model/key. Trả lời các câu hỏi: dùng provider nào, dùng key nào, key còn quota không, có bị rate limit không, lỗi này retry/xoay/dừng, ghi usage ra sao, endpoint/model nào bị khóa. Lớp này không quyết định tenant có quyền chat hay không và không dựng prompt GraphRAG.
+- `app/graphrag/`: lớp GraphRAG engine/pipeline. Trả lời các câu hỏi: cần embedding văn bản nào, lấy context nào từ vector/graph, prompt cần lắp ghép thế nào, cần LLM sinh câu trả lời thế nào. Lớp này gọi AI Gateway để thực thi embedding/LLM, nhưng không tự chọn key, tự xử lý quota, hay tự retry provider.
+- `app/services/`: lớp nghiệp vụ sản phẩm. Trả lời các câu hỏi: tenant/app nào đang gọi, session nào, user/admin có quyền không, lưu lịch sử chat ở đâu, document lifecycle đi qua các trạng thái nào, API nên trả response/schema nào. Services có thể gọi GraphRAG, AI Gateway, repositories, và core dependencies.
+- `app/repositories/` hoặc `app/db/`: lớp persistence. Chỉ đọc/ghi database, cache, vector/graph metadata theo interface rõ ràng. Không chứa workflow nghiệp vụ dài.
+- `app/api/v1/`: lớp HTTP adapter. Router nên mỏng: validate request, lấy dependency/auth context, gọi service, trả schema. Không đặt logic xoay key, retrieval, prompt, document pipeline trực tiếp trong router nếu logic đó bắt đầu lớn.
 
-Luon giu mot chieu phu thuoc de tranh tron trach nhiem: API -> Services -> GraphRAG/AI Gateway/Repositories -> Core utilities. GraphRAG co the dung AI Gateway de goi model; AI Gateway khong phu thuoc nguoc vao GraphRAG hoac Services.
+Luôn giữ chiều phụ thuộc rõ để tránh trộn trách nhiệm: API -> Services -> GraphRAG/AI Gateway/Repositories -> Core utilities. GraphRAG có thể dùng AI Gateway để gọi model; AI Gateway không phụ thuộc ngược vào GraphRAG hoặc Services.
 
-## Ranh Gioi AI Gateway
+## Ranh Giới AI Gateway
 
-`app/ai_gateway/` la loi he thong can hoan thien dau tien de co the nap nhieu API key/model va test that qua trang admin. Khi sua lop nay, giu cac quy uoc sau:
+`app/ai_gateway/` là lõi hệ thống cần hoàn thiện đầu tiên để có thể nạp nhiều API key/model và test thật qua trang admin. Khi sửa lớp này, giữ các quy ước sau:
 
-- AI Gateway chi nhan cac `KeyConfig`/model profile da duoc service/repository nap vao. Neu key luu trong DB thi phai decrypt truoc khi dua vao gateway; gateway khong hard-code secret va khong log secret.
-- `BaseRotator` giu logic chung: acquire key, goi subclass, classify error, retry same key, rotate key, cooldown, disable, abort/admin notify, va tra `RotationResult`.
-- `errors.py` la bang quyet dinh trung tam cho loi provider/litellm. Khi them provider/model moi, uu tien mo rong classify error tai day thay vi rai logic try/except trong tung service.
-- `KeyPool` la runtime pool tach khoi DB. Trang thai DB/Redis ve quota, cooldown, disabled, usage, endpoint lock se duoc map vao/ra pool boi service/repository rieng.
-- Phai tach 2 loai pool/rotator:
-  - **Embedding AI API pool**: dung cho embedding document chunks va embedding query. Dung `EmbeddingRotator`. Phai rang buoc model/dimension/index profile ro rang; khong duoc xoay sang model embedding khac chieu voi LanceDB/vector index dang dung. Ho tro batch input va batch-size theo provider.
-  - **LLM AI API pool**: dung cho sinh cau tra loi, synthesis, reranking LLM neu co, tool/structured output neu sau nay can. Dung `LLMRotator`. Quan ly generation params nhu temperature, max tokens, timeout, streaming/tool calling theo request/profile.
-- Khong tron key embedding va key LLM trong cung mot pool. Mot provider co the co ca embedding va LLM key, nhung runtime profile phai tach theo `capability`/`model_type`: `embedding` hoac `llm`.
-- Quota/usage can duoc ghi theo toi thieu: provider, key_id, model, capability, tenant/app neu request co scope, endpoint, token/input count neu co, latency, success/error verdict.
-- Endpoint/model lock la chinh sach cua Platform Admin: admin co the khoa provider, key, model, endpoint, capability, hoac tenant/app mapping. Gateway phai ton trong lock truoc khi acquire key.
-- Neu gap loi cau hinh can admin can thiep, gateway phai noi len platform admin dashboard thay vi am tham retry vo han.
+- AI Gateway chỉ nhận các `ModelProfile`/`KeyConfig` đã được service/repository nạp vào. Nếu key lưu trong DB thì phải decrypt trước khi đưa vào gateway; gateway không hard-code secret và không log secret.
+- `AIGateway` là facade duy nhất cho GraphRAG/Services gọi model. Tránh để GraphRAG hoặc router gọi trực tiếp `litellm`, `EmbeddingRotator`, hoặc `LLMRotator` nếu không phải test cấp thấp.
+- `BaseRotator` giữ logic chung: acquire key, gọi subclass, classify error, retry same key, rotate key, cooldown, disable, abort/admin notify, và trả `RotationResult`.
+- `errors.py` là bảng quyết định trung tâm cho lỗi provider/litellm. Khi thêm provider/model mới, ưu tiên mở rộng classify error tại đây thay vì rải logic try/except trong từng service.
+- `KeyPool` là runtime pool tách khỏi DB. Trạng thái DB/Redis về quota, cooldown, disabled, usage, endpoint lock sẽ được map vào/ra pool bởi service/repository riêng.
+- Phải tách 2 loại pool/rotator:
+  - **Embedding AI API pool**: dùng cho embedding document chunks và embedding query. Dùng `EmbeddingRotator`. Phải ràng buộc model/dimension/index profile rõ ràng; không được xoay sang model embedding khác chiều với LanceDB/vector index đang dùng. Hỗ trợ batch input và batch-size theo provider.
+  - **LLM AI API pool**: dùng cho sinh câu trả lời, synthesis, reranking LLM nếu có, tool/structured output nếu sau này cần. Dùng `LLMRotator`. Quản lý generation params như temperature, max tokens, timeout, streaming/tool calling theo request/profile.
+- Không trộn key embedding và key LLM trong cùng một pool. Một provider có thể có cả embedding và LLM key, nhưng runtime profile phải tách theo `capability`/`model_type`: `embedding` hoặc `llm`.
+- DB model hiện đã tách `llm_rotation_pools`/`llm_model_profiles` và `embedding_rotation_pools`/`embedding_model_profiles`; khi thêm API/admin, không gộp hai nhóm này lại vì cấu hình và rủi ro khác nhau.
+- Quota/usage cần được ghi theo tối thiểu: provider, key_id, model, capability, tenant/app nếu request có scope, endpoint, input/token count nếu có, latency, success/error verdict.
+- Endpoint/model lock là chính sách của Platform Admin: admin có thể khóa provider, key, model, endpoint, capability, hoặc tenant/app mapping. Gateway phải tôn trọng lock trước khi acquire key.
+- Nếu gặp lỗi cấu hình cần admin can thiệp, gateway phải nổi lên platform admin dashboard thay vì âm thầm retry vô hạn.
+- `health_snapshot()` không được trả secret. Các API/debug endpoint tương lai cũng không được expose `api_key` hoặc `encrypted_api_key`.
 
-## Ranh Gioi GraphRAG
+## Ranh Giới GraphRAG
 
-GraphRAG khong phai noi quan ly key/provider. GraphRAG chi nen nam cac quyet dinh lien quan chat voi tai lieu:
+GraphRAG không phải nơi quản lý key/provider. GraphRAG chỉ nên nắm các quyết định liên quan chat với tài liệu:
 
-- Tao embedding cho document chunks va query bang cach goi embedding profile cua AI Gateway.
-- Doc context tu LanceDB/vector store va Kuzu/graph store theo tenant/app/document scope.
-- Lap prompt/system instruction theo cau hoi, retrieved context, chat history, policy cua app, va citation/source metadata.
-- Goi LLM profile qua AI Gateway de sinh cau tra loi.
-- Neu khong co context, document chua ready, hoac retrieval fail, tra trang thai ro rang cho service de API khong hallucinate.
-- Prompt/retrieval/reranking/synthesis nam trong `app/graphrag/` hoac service GraphRAG chuyen biet; khong dua vao AI Gateway.
+- Tạo embedding cho document chunks và query bằng cách gọi embedding profile của AI Gateway.
+- Đọc context từ LanceDB/vector store và Kuzu/graph store theo tenant/app/document scope.
+- Lắp prompt/system instruction theo câu hỏi, retrieved context, chat history, policy của app, và citation/source metadata.
+- Gọi LLM profile qua AI Gateway để sinh câu trả lời.
+- Nếu không có context, document chưa ready, hoặc retrieval fail, trả trạng thái rõ ràng cho service để API không hallucinate.
+- Prompt/retrieval/reranking/synthesis nằm trong `app/graphrag/` hoặc service GraphRAG chuyên biệt; không đưa vào AI Gateway.
+- Hiện `app/graphrag/engine.py`, `ingestion_pipeline.py`, `query_pipeline.py` còn rỗng. Không ghi tài liệu như thể các pipeline này đã hoàn chỉnh.
 
-## Ranh Gioi Services
+## Ranh Giới Services
 
-Services la noi bieu dien nghiep vu GraphRAG-aaS va la lop ket noi cac he thong con:
+Services là nơi biểu diễn nghiệp vụ GraphRAG-aaS và là lớp kết nối các hệ thống con:
 
-- Xac dinh tenant/app/session/user/admin context tu API key, JWT claim, route scope, hoac dependency.
-- Kiem tra quyen: platform operator, customer admin, end user.
-- Quan ly document lifecycle: upload, parse, chunk, deduplicate, index, re-index, archive/delete, job status/progress.
-- Quan ly chat session/history, audit log, rate limit theo tenant/app/end user neu can.
-- Chon model profile/capability duoc phep cho tenant/app roi truyen danh sach key/model hop le vao AI Gateway.
-- Dinh nghia response API va loi domain ro rang cho frontend/API client.
+- Xác định tenant/app/session/user/admin context từ API key, JWT claim, route scope, hoặc dependency.
+- Kiểm tra quyền: platform operator, customer admin, end user.
+- Quản lý document lifecycle: upload, parse, chunk, deduplicate, index, re-index, archive/delete, job status/progress.
+- Quản lý chat session/history, audit log, rate limit theo tenant/app/end user nếu cần.
+- Chọn model profile/capability được phép cho tenant/app rồi truyền danh sách key/model hợp lệ vào AI Gateway.
+- Định nghĩa response API và lỗi domain rõ ràng cho frontend/API client.
 
-## Platform Admin Va Cau Hinh AI
+## Vector Retrieval Và Hybrid Sau Này
 
-Platform Admin UI/API la noi van hanh noi bo cua GraphRAG-as-a-Service. Khi bat dau them admin cho bo xoay vong API, uu tien cac nang luc sau:
+Hiện tại retrieval service đang vector-only:
 
-- Quan ly provider/model profile theo `capability`: `embedding` va `llm`.
-- Quan ly encrypted API keys, trang thai active/cooldown/disabled, quota, endpoint/model lock, allowed tenant/app mapping.
-- Xem usage, latency, success/fail, verdict/reason, key health snapshot, va canh bao can admin xu ly.
-- Test call rieng cho embedding va LLM de xac minh key/model truoc khi dung cho ingestion/chat.
-- Cau hinh default model profile cho ingestion embedding, query embedding, chat synthesis, va cac tac vu phu nhu rerank neu co.
+- `app/services/vector/embeddings.py` có `HashingTextEmbeddingService` để dev/test không cần secret. Đây không phải embedding production.
+- `app/services/vector/store.py` có `LanceDBVectorStore` và `InMemoryVectorStore`.
+- `app/services/retrieval/orchestrator.py` là điểm hứng retrieval trước khi synthesis. Chat API nên gọi orchestrator/service, không gọi thẳng LanceDB.
+- Khi chuyển sang embedding provider thật, ingest embedding và query embedding phải dùng cùng embedding profile hoặc profile tương thích dimension với index.
+- Khi thêm GraphDB/Kuzu retrieval, mở rộng orchestrator để hợp nhất kết quả vector + graph, rerank, và trả citation/source metadata. Không bẻ chat API sang gọi trực tiếp hai DB.
 
-Customer Admin UI khong duoc quan ly provider key noi bo cua platform. Customer Admin chi quan ly tai lieu, ingestion status, va widget/chat config trong tenant/app cua ho.
+## Platform Admin Và Cấu Hình AI
 
-## Backend Quy Uoc
+Platform Admin UI/API là nơi vận hành nội bộ của GraphRAG-as-a-Service. Khi bắt đầu thêm admin cho bộ xoay vòng API, ưu tiên các năng lực sau:
 
-- Framework hien tai: FastAPI + Pydantic Settings.
-- Cau hinh moi nen them vao `app/core/config.py` va `.env.example`; khong hard-code secret/model key.
-- Khong commit `.env`, document upload, DB files, vector index, graph DB, cache, logs.
-- Neu them API versioned, uu tien `app/api/v1/...` va include router trong `main.py`.
-- Dung response/request schema ro rang cho API public; tranh nhan tham so quan trong bang query string tuy tien neu body/schema phu hop hon.
-- API chat public khong nen nhan raw `file_path` tu client. File path noi bo phai duoc quan ly boi document service.
-- Khi can chay backend local:
+- Quản lý provider/model catalog theo `capability`: `embedding` và `llm`.
+- Quản lý encrypted API keys, trạng thái active/cooldown/disabled, quota, endpoint/model lock, allowed tenant/app mapping.
+- Quản lý LLM rotation pools và embedding rotation pools tách biệt, có default pool theo platform/tenant/app.
+- Xem usage, latency, success/fail, verdict/reason, key health snapshot, và cảnh báo cần admin xử lý.
+- Test call riêng cho embedding và LLM để xác minh key/model trước khi dùng cho ingestion/chat.
+- Cấu hình default model profile cho ingestion embedding, query embedding, chat synthesis, và các tác vụ phụ như rerank nếu có.
+
+Customer Admin UI không được quản lý provider key nội bộ của platform. Customer Admin chỉ quản lý tài liệu, ingestion status, và widget/chat config trong tenant/app của họ.
+
+## Backend Quy Ước
+
+- Framework hiện tại: FastAPI + Pydantic Settings + SQLAlchemy.
+- Cấu hình mới nên thêm vào `app/core/config.py` và `.env.example`; không hard-code secret/model key.
+- Không commit `.env`, document upload, DB files, vector index, graph DB, cache, logs, hoặc `__pycache__`.
+- Nếu thêm API versioned, ưu tiên `app/api/v1/...`; hiện `app/main.py` auto-include router từ `app/api/v1/*.py`.
+- Router prefix phải bắt đầu bằng `/`. Tránh include trùng router theo cả cách manual và auto.
+- Dùng response/request schema rõ ràng cho API public; tránh nhận tham số quan trọng bằng query string tùy tiện nếu body/schema phù hợp hơn.
+- API chat public không nên nhận raw `file_path` từ client. File path nội bộ phải được quản lý bởi document service.
+- Khi thêm/sửa SQLAlchemy model, cập nhật migration Alembic hoặc ghi rõ migration chưa có. Không chỉ sửa model rồi coi như DB đã sẵn sàng.
+- Khi cần chạy backend local:
   - `uvicorn app.main:app --reload`
-- Khi can ha tang local:
+- Khi cần hạ tầng local:
   - `docker compose up -d`
 
-## Frontend Quy Uoc
+## Frontend Quy Ước
 
-- Frontend hien dung Vue + Vite + Pinia + Vue Router.
-- `ui/vite.config.ts` proxy `/api` va `/embed` ve backend `http://localhost:8000`.
-- Build frontend bang:
+- Frontend hiện dùng Vue + Vite + Pinia + Vue Router.
+- `ui/vite.config.ts` proxy `/api` và `/embed` về backend `http://localhost:8000`.
+- Build frontend bằng:
   - `cd ui && npm run build`
-- Chay dev server bang:
+- Chạy dev server bằng:
   - `cd ui && npm run dev`
-- UI can phan biet ro ba khu vuc:
-  - Platform Admin UI noi bo.
-  - Customer Admin UI cho document lifecycle va chat widget builder.
+- UI cần phân biệt rõ ba khu vực:
+  - Platform Admin UI nội bộ.
+  - Customer Admin UI cho document lifecycle và chat widget builder.
   - Embeddable Chat UI cho end user.
-- Chat widget builder can luu cau hinh theo tenant/app, khong chi apply theme client-side tam thoi.
-- Embed UI phai than thien voi iframe/script nhung: kich thuoc on dinh, theming qua config, postMessage co validate origin khi co auth/security that.
+- Phần Platform Admin cho AI Gateway cần tách màn hình/luồng cho embedding profiles và LLM profiles.
+- Chat widget builder cần lưu cấu hình theo tenant/app, không chỉ apply theme client-side tạm thời.
+- Embed UI phải thân thiện với iframe/script nhúng: kích thước ổn định, theming qua config, postMessage có validate origin khi có auth/security thật.
 
-## API Domain De Xuat
+## API Domain Đề Xuất
 
-Khi thay placeholder, uu tien cac namespace sau:
+Khi thay placeholder, ưu tiên các namespace sau:
 
-- `/api/v1/platform/...` cho admin noi bo cua he thong.
-- `/api/v1/apps/...` hoac `/api/v1/tenants/...` cho dang ky va cau hinh phan mem khach hang.
+- `/api/v1/platform/...` cho admin nội bộ của hệ thống.
+- `/api/v1/platform/ai/...` hoặc `/api/v1/ai-gateway/...` cho provider/model/key/pool/test-call/usage nội bộ.
+- `/api/v1/apps/...` hoặc `/api/v1/tenants/...` cho đăng ký và cấu hình phần mềm khách hàng.
 - `/api/v1/documents/...` cho upload, lifecycle, status, re-index.
-- `/api/v1/chat/...` cho query/chat completion co ngu canh tenant/app.
-- `/api/v1/widget-config/...` cho cau hinh giao dien chat.
-- `/embed/chat/...` cho giao dien chat embeddable.
-- `/admin/...` hoac route SPA tuong ung cho UI quan tri.
+- `/api/v1/chat/...` cho query/chat completion có ngữ cảnh tenant/app.
+- `/api/v1/widget-config/...` cho cấu hình giao diện chat.
+- `/embed/chat/...` cho giao diện chat embeddable.
+- `/admin/...` hoặc route SPA tương ứng cho UI quản trị.
 
-Day chi la de xuat dinh huong; neu source da co chuan moi trong tuong lai, uu tien chuan dang hien huu hon file nay.
+Đây chỉ là định hướng; nếu source đã có chuẩn mới trong tương lai, ưu tiên chuẩn hiện hữu hơn file này.
 
-## Data Va Storage
+## Data Và Storage
 
-- PostgreSQL: metadata he thong, tenant/app, users/admins, API keys, document metadata, job status, widget config, audit log.
-- Kuzu: graph entities/relations phuc vu GraphRAG.
+- PostgreSQL: metadata hệ thống, tenant/app, users/admins, API keys, provider/model catalog, rotation pools/profiles, usage events, document metadata, job status, widget config, audit log.
+- Kuzu: graph entities/relations phục vụ GraphRAG.
 - LanceDB: vector embeddings/chunks/retrieval index.
-- Redis: cache, queue/job coordination, rate limit, session tam thoi neu can.
-- `data/` la runtime data, khong commit.
-- Moi ban ghi document/chunk/entity/vector nen co tenant/app/document scope ro rang.
+- Redis: cache, queue/job coordination, rate limit, session tạm thời nếu cần.
+- `data/` là runtime data, không commit.
+- Mỗi bản ghi document/chunk/entity/vector/usage nên có tenant/app/document hoặc endpoint scope rõ ràng khi phù hợp.
 
-## Bao Mat Va Tich Hop
+## Bảo Mật Và Tích Hợp
 
-- API key/JWT phai duoc hash/luu an toan khi di vao production; khong log secret.
-- CORS hien dang mo `["*"]` de tien embed/dev. Khi lam production, can scoped origins theo tenant/app.
-- Embed/postMessage phai tinh toi validate origin, allowed domains, va khong tin raw event data.
-- Admin cua khach hang chi duoc xem/sua tai lieu va widget config cua app/tenant minh.
-- End-user chat API can rate limit, audit, va guardrails phu hop vi day la API public-facing.
+- API key/JWT phải được hash/lưu an toàn khi đi vào production; không log secret.
+- API key provider phải được mã hóa khi lưu DB. Chỉ decrypt ở service/repository trước khi đưa vào `KeyConfig`.
+- Không trả `api_key`, `encrypted_api_key`, hoặc secret trong health snapshot, API response, log, fixture, hoặc AGENTS.md.
+- CORS hiện đang mở `["*"]` để tiện embed/dev. Khi làm production, cần scoped origins theo tenant/app.
+- Embed/postMessage phải tính tới validate origin, allowed domains, và không tin raw event data.
+- Admin của khách hàng chỉ được xem/sửa tài liệu và widget config của app/tenant mình.
+- End-user chat API cần rate limit, audit, và guardrails phù hợp vì đây là API public-facing.
 
 ## Chat/GraphRAG Behavior
 
-- Chat response nen dua tren retrieved context tu tai lieu cua dung tenant/app.
-- Neu khong co ngu canh hoac tai lieu chua san sang, API nen tra trang thai/loi ro rang thay vi hallucinate.
-- Nen luu citation/source metadata de UI co the hien thi nguon.
-- Document lifecycle can co trang thai nhu uploaded, parsing, indexing, ready, failed, archived/deleted.
-- Pipeline nen idempotent o cac buoc de co the retry job.
+- Chat response nên dựa trên retrieved context từ tài liệu của đúng tenant/app.
+- Nếu không có ngữ cảnh, tài liệu chưa sẵn sàng, hoặc model gateway không có profile/key khả dụng, API nên trả trạng thái/lỗi rõ ràng thay vì hallucinate.
+- Nên lưu citation/source metadata để UI có thể hiển thị nguồn.
+- Document lifecycle cần có trạng thái như uploaded, parsing, indexing, ready, failed, archived/deleted.
+- Pipeline nên idempotent ở các bước để có thể retry job.
 
-## Kiem Tra Va Chat Luong
+## Kiểm Tra Và Chất Lượng
 
-Hien repo chua co test runner ro rang cho backend. Khi them logic co rui ro, nen them test tuong ung trong `test/` hoac thu muc test chuan cua framework duoc chon.
+Test hiện có dùng `unittest` trong thư mục `test/`.
 
-Cac lenh kiem tra co san/hop ly:
+Các lệnh kiểm tra có sẵn/hợp lý:
 
+- Backend unit tests:
+  - `PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m unittest discover -s test`
 - Frontend type check/build:
   - `cd ui && npm run build`
 - Backend smoke run:
   - `uvicorn app.main:app --reload`
-- Ha tang local:
+- Hạ tầng local:
   - `docker compose up -d`
 
-Neu them tool moi nhu pytest, ruff, alembic migrations, hay task queue, cap nhat file nay va README/script lien quan.
+Khi thêm logic có rủi ro, thêm test tương ứng trong `test/`. Các test AI Gateway nên ưu tiên fake/mock rotator hoặc test logic pool/classification trước; chỉ chạy provider thật khi có cấu hình rõ và không làm lộ secret.
 
-## Quy Uoc Lam Viec Cho Codex
+Nếu thêm tool mới như pytest, ruff, alembic migrations, hay task queue, cập nhật file này và README/script liên quan.
 
-- Luon coi day la san pham platform/API-first, khong phai demo chatbot don tenant.
-- Truoc khi sua kien truc, quet source hien tai va giu pattern dang co neu hop ly.
-- Khong overwrite thay doi nguoi dung da lam.
-- Khi tao file/chuc nang moi, dat ten theo domain GraphRAG-aaS that thay vi `feature1/feature2`.
-- Khi sua frontend, dam bao route/component ton tai that va build duoc.
-- Khi sua backend, dam bao router prefix/path hop le; tranh loi path thieu dau `/`.
-- Khong dua secret vao code, log, fixture, hoac AGENTS.md.
-- Neu yeu cau lien quan OpenAI/API/model moi nhat, phai kiem tra tai lieu chinh thuc truoc khi ket luan.
+## Quy Ước Làm Việc Cho Codex
+
+- Luôn coi đây là sản phẩm platform/API-first, không phải demo chatbot đơn tenant.
+- Trước khi sửa kiến trúc, quét source hiện tại và giữ pattern đang có nếu hợp lý.
+- Không overwrite thay đổi người dùng đã làm.
+- Khi tạo file/chức năng mới, đặt tên theo domain GraphRAG-aaS thật thay vì `feature1/feature2`.
+- Khi sửa frontend, đảm bảo route/component tồn tại thật và build được.
+- Khi sửa backend, đảm bảo router prefix/path hợp lệ; tránh lỗi path thiếu dấu `/`.
+- Không đưa secret vào code, log, fixture, hoặc AGENTS.md.
+- Nếu yêu cầu liên quan OpenAI/API/model mới nhất, phải kiểm tra tài liệu chính thức trước khi kết luận.
