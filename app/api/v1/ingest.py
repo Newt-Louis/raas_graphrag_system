@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 from app.core.config import settings
 from app.services.ingestion import DocumentIngestionPipeline
+from app.services.ingestion.storage import IngestionFanoutSink
 from app.services.ingestion.models import ChunkStrategy, ChunkingConfig, DocumentScope
 from app.services.ingestion.parsers import (
     ALLOWED_DOCUMENT_EXTENSIONS,
@@ -17,6 +18,7 @@ from app.services.ingestion.parsers import (
     ParserUnavailableError,
     validate_document_file,
 )
+from app.services.vector.factory import get_vector_store
 
 router = APIRouter(prefix="/ingest", tags=["ingest"])
 
@@ -72,7 +74,9 @@ async def ingest_document(
         app_id=app_id,
     )
 
-    pipeline = DocumentIngestionPipeline()
+    pipeline = DocumentIngestionPipeline(
+        sink=IngestionFanoutSink(vector_sink=get_vector_store()),
+    )
     try:
         bundle = pipeline.ingest_file(
             path=stored_path,

@@ -34,9 +34,17 @@ class Settings(BaseSettings):
     # Kùzu & LanceDB
     KUZU_DB_PATH: Path = Path("data/kuzu/graph.db")
     LANCEDB_PATH: Path = Path("data/lancedb")
+    VECTOR_INDEX_TABLE: str = "document_chunks"
+    VECTOR_DISTANCE_METRIC: str = "cosine"
 
     # LLM
     OPENAI_API_KEY: str = ""
+
+    # Embedding
+    EMBEDDING_PROVIDER: str = "local_hashing"
+    EMBEDDING_MODEL_NAME: str = "local-hashing-v1"
+    EMBEDDING_DIMENSIONS: int = 384
+    RETRIEVAL_MIN_SCORE: float = 0.0
 
     # Security
     SECRET_KEY: str
