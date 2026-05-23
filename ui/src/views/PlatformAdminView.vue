@@ -1,82 +1,78 @@
 <script setup lang="ts">
-import { computed, nextTick, reactive, ref, watch } from 'vue'
+import { nextTick, reactive, ref, watch } from 'vue'
 import Button from 'primevue/button'
 import Card from 'primevue/card'
 import Column from 'primevue/column'
 import DataTable from 'primevue/datatable'
 import InputNumber from 'primevue/inputnumber'
 import InputText from 'primevue/inputtext'
-import Password from 'primevue/password'
 import Select from 'primevue/select'
 import SelectButton from 'primevue/selectbutton'
 import Tag from 'primevue/tag'
-import ToggleSwitch from 'primevue/toggleswitch'
 
 import { type ThemeMode, useThemePreference } from '@/composables/useThemePreference'
 
-type Capability = 'embedding' | 'llm'
 type ApiStatus = 'active' | 'cooldown' | 'locked' | 'disabled'
 
 type EditableField =
-  | 'profileName'
-  | 'provider'
-  | 'capability'
-  | 'modelName'
-  | 'apiKeyPreview'
-  | 'apiBase'
-  | 'endpointId'
-  | 'status'
-  | 'embeddingDimensions'
-  | 'maxBatchSize'
-  | 'contextWindow'
-  | 'maxOutputTokens'
+  | 'pool_id'
+  | 'provider_id'
+  | 'api_key_id'
+  | 'model_id'
+  | 'profile_name'
+  | 'model_name'
+  | 'api_base'
+  | 'endpoint_id'
+  | 'rotation_order'
+  | 'weight'
+  | 'daily_request_count'
+  | 'minute_request_count'
   | 'temperature'
-  | 'timeoutSeconds'
-  | 'minuteQuota'
-  | 'dailyQuota'
-  | 'defaultProfile'
+  | 'top_p'
+  | 'top_k'
+  | 'max_output_tokens'
+  | 'timeout_seconds'
+  | 'cost_per_1k_input_tokens'
+  | 'cost_per_1k_output_tokens'
+  | 'extra_parameters'
+  | 'status'
 
-interface ApiEntry {
+interface ApiModelProfile {
   id: string
-  profileName: string
-  provider: string
-  capability: Capability
-  modelName: string
-  apiKeyPreview: string
-  apiBase: string
-  endpointId: string
-  status: ApiStatus
-  embeddingDimensions: number | null
-  maxBatchSize: number | null
-  contextWindow: number | null
-  maxOutputTokens: number | null
+  pool_id: string
+  provider_id: string
+  api_key_id: string
+  model_id: string
+  profile_name: string
+  model_name: string
+  api_base: string
+  endpoint_id: string
+  rotation_order: number
+  weight: number
+  daily_request_count: number
+  minute_request_count: number
   temperature: number | null
-  timeoutSeconds: number
-  minuteQuota: number | null
-  dailyQuota: number | null
-  defaultProfile: boolean
+  top_p: number | null
+  top_k: number | null
+  max_output_tokens: number | null
+  timeout_seconds: number
+  cost_per_1k_input_tokens: number | null
+  cost_per_1k_output_tokens: number | null
+  extra_parameters: string
+  status: ApiStatus
 }
 
 interface EditableColumn {
   field: EditableField
   header: string
   width: string
-  editor: 'text' | 'password' | 'number' | 'decimal' | 'select' | 'switch'
+  editor: 'text' | 'number' | 'decimal' | 'select' | 'json'
 }
 
-const STORAGE_KEY = 'raas-platform-admin-api-profiles'
+const STORAGE_KEY = 'raas-platform-admin-model-profiles-v2'
 
-const providerOptions = ['OpenAI', 'Google Gemini', 'Groq', 'OpenRouter', 'Cohere', 'DashScope', 'ZhipuAI', 'Custom']
-const capabilityOptions = [
-  { label: 'Embedding', value: 'embedding' },
-  { label: 'LLM', value: 'llm' },
-]
-const statusOptions = [
-  { label: 'Active', value: 'active' },
-  { label: 'Cooldown', value: 'cooldown' },
-  { label: 'Locked', value: 'locked' },
-  { label: 'Disabled', value: 'disabled' },
-]
+const statusOptions: ApiStatus[] = ['active', 'cooldown', 'locked', 'disabled']
+const providerOptions = ['openai', 'google', 'groq', 'openrouter', 'cohere', 'dashscope', 'zhipuai', 'custom']
 const themeOptions: { label: string; value: ThemeMode; icon: string }[] = [
   { label: 'Light', value: 'light', icon: 'pi pi-sun' },
   { label: 'Dark', value: 'dark', icon: 'pi pi-moon' },
@@ -84,108 +80,93 @@ const themeOptions: { label: string; value: ThemeMode; icon: string }[] = [
 ]
 
 const editableColumns: EditableColumn[] = [
-  { field: 'profileName', header: 'Profile', width: '180px', editor: 'text' },
-  { field: 'provider', header: 'Provider', width: '160px', editor: 'select' },
-  { field: 'capability', header: 'Type', width: '130px', editor: 'select' },
-  { field: 'modelName', header: 'Model', width: '220px', editor: 'text' },
-  { field: 'apiKeyPreview', header: 'API key', width: '150px', editor: 'password' },
-  { field: 'apiBase', header: 'API base', width: '220px', editor: 'text' },
-  { field: 'endpointId', header: 'Endpoint', width: '160px', editor: 'text' },
-  { field: 'status', header: 'Status', width: '130px', editor: 'select' },
-  { field: 'embeddingDimensions', header: 'Dim', width: '110px', editor: 'number' },
-  { field: 'maxBatchSize', header: 'Batch', width: '110px', editor: 'number' },
-  { field: 'contextWindow', header: 'Context', width: '120px', editor: 'number' },
-  { field: 'maxOutputTokens', header: 'Output', width: '120px', editor: 'number' },
-  { field: 'temperature', header: 'Temp', width: '110px', editor: 'decimal' },
-  { field: 'timeoutSeconds', header: 'Timeout', width: '120px', editor: 'number' },
-  { field: 'minuteQuota', header: 'RPM', width: '110px', editor: 'number' },
-  { field: 'dailyQuota', header: 'RPD', width: '110px', editor: 'number' },
-  { field: 'defaultProfile', header: 'Default', width: '110px', editor: 'switch' },
+  { field: 'pool_id', header: 'pool_id', width: '220px', editor: 'text' },
+  { field: 'provider_id', header: 'provider_id', width: '150px', editor: 'select' },
+  { field: 'api_key_id', header: 'api_key_id', width: '220px', editor: 'text' },
+  { field: 'model_id', header: 'model_id', width: '180px', editor: 'text' },
+  { field: 'profile_name', header: 'profile_name', width: '220px', editor: 'text' },
+  { field: 'model_name', header: 'model_name', width: '260px', editor: 'text' },
+  { field: 'api_base', header: 'api_base', width: '260px', editor: 'text' },
+  { field: 'endpoint_id', header: 'endpoint_id', width: '170px', editor: 'text' },
+  { field: 'rotation_order', header: 'rotation_order', width: '130px', editor: 'number' },
+  { field: 'weight', header: 'weight', width: '100px', editor: 'number' },
+  { field: 'daily_request_count', header: 'daily_request_count', width: '160px', editor: 'number' },
+  { field: 'minute_request_count', header: 'minute_request_count', width: '170px', editor: 'number' },
+  { field: 'temperature', header: 'temperature', width: '130px', editor: 'decimal' },
+  { field: 'top_p', header: 'top_p', width: '100px', editor: 'decimal' },
+  { field: 'top_k', header: 'top_k', width: '100px', editor: 'number' },
+  { field: 'max_output_tokens', header: 'max_output_tokens', width: '160px', editor: 'number' },
+  { field: 'timeout_seconds', header: 'timeout_seconds', width: '150px', editor: 'number' },
+  { field: 'cost_per_1k_input_tokens', header: 'cost_per_1k_input_tokens', width: '210px', editor: 'decimal' },
+  { field: 'cost_per_1k_output_tokens', header: 'cost_per_1k_output_tokens', width: '220px', editor: 'decimal' },
+  { field: 'extra_parameters', header: 'extra_parameters', width: '260px', editor: 'json' },
+  { field: 'status', header: 'status', width: '120px', editor: 'select' },
 ]
 
-const fallbackEntries: ApiEntry[] = [
-  {
-    id: 'profile-embedding-default',
-    profileName: 'embedding-default',
-    provider: 'OpenAI',
-    capability: 'embedding',
-    modelName: 'text-embedding-3-small',
-    apiKeyPreview: 'sk-...n/a',
-    apiBase: '',
-    endpointId: 'embeddings-primary',
-    status: 'active',
-    embeddingDimensions: 1536,
-    maxBatchSize: 96,
-    contextWindow: null,
-    maxOutputTokens: null,
-    temperature: null,
-    timeoutSeconds: 60,
-    minuteQuota: 3000,
-    dailyQuota: 200000,
-    defaultProfile: true,
-  },
+const fallbackEntries: ApiModelProfile[] = [
   {
     id: 'profile-llm-default',
-    profileName: 'llm-default',
-    provider: 'Google Gemini',
-    capability: 'llm',
-    modelName: 'gemini/gemini-2.0-flash',
-    apiKeyPreview: 'AIza...n/a',
-    apiBase: '',
-    endpointId: 'chat-primary',
-    status: 'active',
-    embeddingDimensions: null,
-    maxBatchSize: null,
-    contextWindow: 1048576,
-    maxOutputTokens: 8192,
+    pool_id: 'llm-pool-default',
+    provider_id: 'google',
+    api_key_id: 'gemini-key-primary',
+    model_id: 'gemini-flash-catalog-id',
+    profile_name: 'llm-default',
+    model_name: 'gemini/gemini-2.0-flash',
+    api_base: '',
+    endpoint_id: 'chat-primary',
+    rotation_order: 0,
+    weight: 1,
+    daily_request_count: 0,
+    minute_request_count: 0,
     temperature: 0.3,
-    timeoutSeconds: 120,
-    minuteQuota: 60,
-    dailyQuota: 1500,
-    defaultProfile: true,
+    top_p: 0.95,
+    top_k: 40,
+    max_output_tokens: 8192,
+    timeout_seconds: 120,
+    cost_per_1k_input_tokens: 0,
+    cost_per_1k_output_tokens: 0,
+    extra_parameters: '{}',
+    status: 'active',
   },
 ]
 
 const { themeMode, setThemeMode } = useThemePreference()
-const apiEntries = ref<ApiEntry[]>(loadEntries())
+const profiles = ref<ApiModelProfile[]>(loadEntries())
 const editingCell = ref<{ rowId: string; field: EditableField } | null>(null)
-const editTextDraft = ref('')
-const editNumberDraft = ref<number | null>(null)
-const editBooleanDraft = ref(false)
+const editDraft = ref('')
 
-const form = reactive({
-  profileName: '',
-  provider: 'OpenAI',
-  capability: 'embedding' as Capability,
-  modelName: '',
-  apiKey: '',
-  apiBase: '',
-  endpointId: '',
-  embeddingDimensions: 1536 as number | null,
-  maxBatchSize: 96 as number | null,
-  contextWindow: 128000 as number | null,
-  maxOutputTokens: 4096 as number | null,
-  temperature: 0.3 as number | null,
-  timeoutSeconds: 60,
-  minuteQuota: null as number | null,
-  dailyQuota: null as number | null,
-  defaultProfile: false,
+const form = reactive<Omit<ApiModelProfile, 'id' | 'status'>>({
+  pool_id: '',
+  provider_id: 'openai',
+  api_key_id: '',
+  model_id: '',
+  profile_name: '',
+  model_name: '',
+  api_base: '',
+  endpoint_id: '',
+  rotation_order: 0,
+  weight: 1,
+  daily_request_count: 0,
+  minute_request_count: 0,
+  temperature: 0.3,
+  top_p: 1,
+  top_k: null,
+  max_output_tokens: 4096,
+  timeout_seconds: 120,
+  cost_per_1k_input_tokens: null,
+  cost_per_1k_output_tokens: null,
+  extra_parameters: '{}',
 })
 
-const totalProfiles = computed(() => apiEntries.value.length)
-const embeddingProfiles = computed(() => apiEntries.value.filter((entry) => entry.capability === 'embedding').length)
-const llmProfiles = computed(() => apiEntries.value.filter((entry) => entry.capability === 'llm').length)
-const activeProfiles = computed(() => apiEntries.value.filter((entry) => entry.status === 'active').length)
-
 watch(
-  apiEntries,
+  profiles,
   (entries) => {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(entries))
   },
   { deep: true },
 )
 
-function loadEntries(): ApiEntry[] {
+function loadEntries(): ApiModelProfile[] {
   if (typeof window === 'undefined') return fallbackEntries
 
   const stored = window.localStorage.getItem(STORAGE_KEY)
@@ -199,40 +180,56 @@ function loadEntries(): ApiEntry[] {
   }
 }
 
-function addApiProfile() {
-  if (!form.profileName.trim() || !form.modelName.trim()) return
+function addModelProfile() {
+  if (!form.pool_id.trim() || !form.provider_id.trim() || !form.api_key_id.trim() || !form.profile_name.trim() || !form.model_name.trim()) {
+    return
+  }
 
-  const isEmbedding = form.capability === 'embedding'
-  apiEntries.value = [
+  profiles.value = [
     {
       id: crypto.randomUUID(),
-      profileName: form.profileName.trim(),
-      provider: form.provider,
-      capability: form.capability,
-      modelName: form.modelName.trim(),
-      apiKeyPreview: maskSecret(form.apiKey),
-      apiBase: form.apiBase.trim(),
-      endpointId: form.endpointId.trim(),
+      ...normalizeForm(),
       status: 'active',
-      embeddingDimensions: isEmbedding ? form.embeddingDimensions : null,
-      maxBatchSize: isEmbedding ? form.maxBatchSize : null,
-      contextWindow: isEmbedding ? null : form.contextWindow,
-      maxOutputTokens: isEmbedding ? null : form.maxOutputTokens,
-      temperature: isEmbedding ? null : form.temperature,
-      timeoutSeconds: form.timeoutSeconds,
-      minuteQuota: form.minuteQuota,
-      dailyQuota: form.dailyQuota,
-      defaultProfile: form.defaultProfile,
     },
-    ...apiEntries.value,
+    ...profiles.value,
   ]
 
-  form.profileName = ''
-  form.modelName = ''
-  form.apiKey = ''
-  form.endpointId = ''
-  form.apiBase = ''
-  form.defaultProfile = false
+  form.api_key_id = ''
+  form.model_id = ''
+  form.profile_name = ''
+  form.model_name = ''
+  form.api_base = ''
+  form.endpoint_id = ''
+  form.extra_parameters = '{}'
+}
+
+function normalizeForm(): Omit<ApiModelProfile, 'id' | 'status'> {
+  return {
+    pool_id: form.pool_id.trim(),
+    provider_id: form.provider_id.trim(),
+    api_key_id: form.api_key_id.trim(),
+    model_id: form.model_id.trim(),
+    profile_name: form.profile_name.trim(),
+    model_name: form.model_name.trim(),
+    api_base: form.api_base.trim(),
+    endpoint_id: form.endpoint_id.trim(),
+    rotation_order: Number(form.rotation_order || 0),
+    weight: Number(form.weight || 1),
+    daily_request_count: Number(form.daily_request_count || 0),
+    minute_request_count: Number(form.minute_request_count || 0),
+    temperature: nullableNumber(form.temperature),
+    top_p: nullableNumber(form.top_p),
+    top_k: nullableNumber(form.top_k),
+    max_output_tokens: nullableNumber(form.max_output_tokens),
+    timeout_seconds: Number(form.timeout_seconds || 120),
+    cost_per_1k_input_tokens: nullableNumber(form.cost_per_1k_input_tokens),
+    cost_per_1k_output_tokens: nullableNumber(form.cost_per_1k_output_tokens),
+    extra_parameters: form.extra_parameters.trim() || '{}',
+  }
+}
+
+function nullableNumber(value: number | null) {
+  return value === null || Number.isNaN(value) ? null : Number(value)
 }
 
 function isEditing(rowId: string, field: EditableField) {
@@ -244,14 +241,11 @@ async function startEdit(rowId: string, field: EditableField) {
     commitEdit()
   }
 
-  const row = apiEntries.value.find((entry) => entry.id === rowId)
+  const row = profiles.value.find((entry) => entry.id === rowId)
   if (!row) return
 
   editingCell.value = { rowId, field }
-  const value = row[field]
-  editTextDraft.value = field === 'apiKeyPreview' ? '' : String(value ?? '')
-  editNumberDraft.value = typeof value === 'number' ? value : null
-  editBooleanDraft.value = Boolean(value)
+  editDraft.value = String(row[field] ?? '')
   await nextTick()
   focusEditor(rowId, field)
 }
@@ -260,26 +254,14 @@ function commitEdit() {
   if (!editingCell.value) return
 
   const { rowId, field } = editingCell.value
-  const row = apiEntries.value.find((entry) => entry.id === rowId)
-  if (!row) {
+  const row = profiles.value.find((entry) => entry.id === rowId)
+  const column = editableColumns.find((entry) => entry.field === field)
+  if (!row || !column) {
     editingCell.value = null
     return
   }
 
-  const column = editableColumns.find((item) => item.field === field)
-  const rawValue =
-    column?.editor === 'number' || column?.editor === 'decimal'
-      ? editNumberDraft.value
-      : column?.editor === 'switch'
-        ? editBooleanDraft.value
-        : editTextDraft.value
-
-  if (field === 'apiKeyPreview') {
-    const value = String(rawValue || '').trim()
-    if (value) row.apiKeyPreview = maskSecret(value)
-  } else {
-    ;(row[field] as unknown) = normalizeDraft(field, rawValue)
-  }
+  ;(row[field] as unknown) = normalizeDraft(column, editDraft.value)
   editingCell.value = null
 }
 
@@ -287,78 +269,79 @@ function cancelEdit() {
   editingCell.value = null
 }
 
-async function moveToNextCell(rowId: string, field: EditableField) {
+function getNextCell(rowId: string, field: EditableField) {
   const currentColumn = editableColumns.findIndex((column) => column.field === field)
-  const currentRow = apiEntries.value.findIndex((entry) => entry.id === rowId)
-  if (currentColumn < 0 || currentRow < 0) return
+  const currentRow = profiles.value.findIndex((entry) => entry.id === rowId)
+  if (currentColumn < 0 || currentRow < 0) return null
 
   let nextColumn = currentColumn + 1
   let nextRow = currentRow
   if (nextColumn >= editableColumns.length) {
     nextColumn = 0
-    nextRow = Math.min(currentRow + 1, apiEntries.value.length - 1)
+    nextRow = Math.min(currentRow + 1, profiles.value.length - 1)
   }
 
-  const nextEntry = apiEntries.value[nextRow]
+  const nextEntry = profiles.value[nextRow]
   const nextColumnConfig = editableColumns[nextColumn]
-  if (!nextEntry || !nextColumnConfig) return
-  const nextField = nextColumnConfig.field
-  await startEdit(nextEntry.id, nextField)
+  if (!nextEntry || !nextColumnConfig) return null
+  return { rowId: nextEntry.id, field: nextColumnConfig.field }
 }
 
-function onEditorKeydown(event: KeyboardEvent, rowId: string, field: EditableField) {
+async function onEditorKeydown(event: KeyboardEvent, rowId: string, field: EditableField) {
   if (event.key === 'Enter') {
     event.preventDefault()
+    event.stopPropagation()
     commitEdit()
+    if (event.currentTarget instanceof HTMLElement) {
+      event.currentTarget.blur()
+    }
     return
   }
 
   if (event.key === 'Tab') {
     event.preventDefault()
+    event.stopPropagation()
+    const nextCell = getNextCell(rowId, field)
     commitEdit()
-    void moveToNextCell(rowId, field)
+    if (nextCell) {
+      await startEdit(nextCell.rowId, nextCell.field)
+    }
     return
   }
 
   if (event.key === 'Escape') {
     event.preventDefault()
+    event.stopPropagation()
     cancelEdit()
+    if (event.currentTarget instanceof HTMLElement) {
+      event.currentTarget.blur()
+    }
   }
+}
+
+function onEditorBlur(rowId: string, field: EditableField) {
+  if (!isEditing(rowId, field)) return
+  commitEdit()
 }
 
 function focusEditor(rowId: string, field: EditableField) {
   const key = `${rowId}:${field}`
-  const host = document.querySelector<HTMLElement>(`[data-editor-key="${CSS.escape(key)}"]`)
-  const input = host?.querySelector<HTMLElement>('input, select, button')
-  input?.focus()
-  if (input instanceof HTMLInputElement) input.select()
+  const editor = document.querySelector<HTMLInputElement | HTMLSelectElement>(`[data-editor-key="${CSS.escape(key)}"]`)
+  editor?.focus()
+  if (editor instanceof HTMLInputElement) editor.select()
 }
 
-function normalizeDraft(field: EditableField, value: unknown) {
-  if (field === 'defaultProfile') return Boolean(value)
-  if (field === 'capability') return value === 'llm' ? 'llm' : 'embedding'
-  if (field === 'status') return String(value || 'active') as ApiStatus
-  if (field === 'provider') return String(value || 'Custom')
-  if (['embeddingDimensions', 'maxBatchSize', 'contextWindow', 'maxOutputTokens', 'timeoutSeconds', 'minuteQuota', 'dailyQuota'].includes(field)) {
-    return value === '' || value === undefined ? null : Number(value)
-  }
-  if (field === 'temperature') {
-    return value === '' || value === undefined ? null : Number(value)
-  }
-  return String(value ?? '').trim()
+function normalizeDraft(column: EditableColumn, value: string) {
+  if (column.field === 'status') return statusOptions.includes(value as ApiStatus) ? (value as ApiStatus) : 'active'
+  if (column.field === 'provider_id') return value || 'custom'
+  if (column.editor === 'number') return value.trim() === '' ? null : Number.parseInt(value, 10)
+  if (column.editor === 'decimal') return value.trim() === '' ? null : Number(value)
+  if (column.editor === 'json') return value.trim() || '{}'
+  return value.trim()
 }
 
-function fieldOptions(field: EditableField) {
-  if (field === 'provider') return providerOptions
-  if (field === 'capability') return capabilityOptions
-  if (field === 'status') return statusOptions
-  return []
-}
-
-function formatCell(row: ApiEntry, field: EditableField) {
+function formatCell(row: ApiModelProfile, field: EditableField) {
   const value = row[field]
-  if (field === 'capability') return row.capability === 'embedding' ? 'Embedding' : 'LLM'
-  if (field === 'defaultProfile') return row.defaultProfile ? 'Yes' : 'No'
   if (value === null || value === undefined || value === '') return '—'
   return String(value)
 }
@@ -370,11 +353,10 @@ function statusSeverity(status: ApiStatus) {
   return 'danger'
 }
 
-function maskSecret(value: string) {
-  const trimmed = value.trim()
-  if (!trimmed) return 'Not set'
-  if (trimmed.length <= 8) return '••••' + trimmed.slice(-2)
-  return `${trimmed.slice(0, 4)}...${trimmed.slice(-4)}`
+function selectOptions(field: EditableField) {
+  if (field === 'provider_id') return providerOptions
+  if (field === 'status') return statusOptions
+  return []
 }
 
 function setTheme(value: ThemeMode) {
@@ -386,254 +368,206 @@ function setTheme(value: ThemeMode) {
   <section class="platform-dashboard">
     <header class="dashboard-header">
       <div>
-        <span class="eyebrow">Platform Admin</span>
-        <h1>System AI Gateway Dashboard</h1>
-        <p>Quản lý provider, API key, model profile, quota và thông số runtime cho lõi xoay vòng model của hệ thống.</p>
+        <span class="eyebrow">System Admin</span>
+        <h1>AI model rotation profiles</h1>
+        <p>Quản lý thông tin model profile dùng cho lõi xoay vòng LLM của hệ thống.</p>
       </div>
 
-      <div class="theme-control">
-        <SelectButton
-          :model-value="themeMode"
-          :options="themeOptions"
-          option-label="label"
-          option-value="value"
-          aria-label="Theme mode"
-          @update:model-value="setTheme($event as ThemeMode)"
-        >
-          <template #option="{ option }">
-            <span class="theme-option">
-              <i :class="option.icon" />
-              <span>{{ option.label }}</span>
-            </span>
-          </template>
-        </SelectButton>
-      </div>
+      <SelectButton
+        :model-value="themeMode"
+        :options="themeOptions"
+        option-label="label"
+        option-value="value"
+        aria-label="Theme mode"
+        @update:model-value="setTheme($event as ThemeMode)"
+      >
+        <template #option="{ option }">
+          <span class="theme-option">
+            <i :class="option.icon" />
+            <span>{{ option.label }}</span>
+          </span>
+        </template>
+      </SelectButton>
     </header>
 
-    <section class="metric-strip" aria-label="AI gateway metrics">
-      <Card>
-        <template #content>
-          <span class="metric-label">Profiles</span>
-          <strong>{{ totalProfiles }}</strong>
-        </template>
-      </Card>
-      <Card>
-        <template #content>
-          <span class="metric-label">Embedding</span>
-          <strong>{{ embeddingProfiles }}</strong>
-        </template>
-      </Card>
-      <Card>
-        <template #content>
-          <span class="metric-label">LLM</span>
-          <strong>{{ llmProfiles }}</strong>
-        </template>
-      </Card>
-      <Card>
-        <template #content>
-          <span class="metric-label">Active</span>
-          <strong>{{ activeProfiles }}</strong>
-        </template>
-      </Card>
-    </section>
+    <Card class="profile-form-card">
+      <template #title>Add model profile</template>
+      <template #content>
+        <form class="profile-form" @submit.prevent="addModelProfile">
+          <label class="span-2">
+            <span>provider_id</span>
+            <Select v-model="form.provider_id" :options="providerOptions" />
+          </label>
 
-    <section class="admin-layout">
-      <Card class="profile-form-card">
-        <template #title>Add AI API profile</template>
-        <template #content>
-          <form class="profile-form" @submit.prevent="addApiProfile">
-            <label>
-              <span>Profile name</span>
-              <InputText v-model="form.profileName" placeholder="embedding-default" />
-            </label>
+          <label class="span-4">
+            <span>model_name</span>
+            <InputText v-model="form.model_name" placeholder="provider/model-name" />
+          </label>
 
-            <label>
-              <span>Provider</span>
-              <Select v-model="form.provider" :options="providerOptions" />
-            </label>
+          <label class="span-4">
+            <span>profile_name</span>
+            <InputText v-model="form.profile_name" placeholder="llm-default" />
+          </label>
 
-            <label>
-              <span>Capability</span>
-              <Select v-model="form.capability" :options="capabilityOptions" option-label="label" option-value="value" />
-            </label>
+          <label class="span-4">
+            <span>pool_id</span>
+            <InputText v-model="form.pool_id" placeholder="llm-pool-default" />
+          </label>
 
-            <label>
-              <span>Model name</span>
-              <InputText v-model="form.modelName" placeholder="provider/model-name" />
-            </label>
+          <label class="span-4">
+            <span>api_key_id</span>
+            <InputText v-model="form.api_key_id" placeholder="key-id-from-ai-api-keys" />
+          </label>
 
-            <label>
-              <span>API key</span>
-              <Password v-model="form.apiKey" toggle-mask :feedback="false" input-class="full-input" />
-            </label>
+          <label class="span-2">
+            <span>model_id</span>
+            <InputText v-model="form.model_id" placeholder="optional" />
+          </label>
 
-            <label>
-              <span>API base</span>
-              <InputText v-model="form.apiBase" placeholder="https://..." />
-            </label>
+          <label class="span-4">
+            <span>api_base</span>
+            <InputText v-model="form.api_base" placeholder="https://..." />
+          </label>
 
-            <label>
-              <span>Endpoint ID</span>
-              <InputText v-model="form.endpointId" placeholder="chat-primary" />
-            </label>
+          <label class="span-3">
+            <span>endpoint_id</span>
+            <InputText v-model="form.endpoint_id" placeholder="chat-primary" />
+          </label>
 
-            <template v-if="form.capability === 'embedding'">
-              <label>
-                <span>Dimensions</span>
-                <InputNumber v-model="form.embeddingDimensions" :min="1" input-class="full-input" />
-              </label>
-              <label>
-                <span>Batch size</span>
-                <InputNumber v-model="form.maxBatchSize" :min="1" input-class="full-input" />
-              </label>
-            </template>
+          <label class="span-1">
+            <span>rotation_order</span>
+            <InputNumber v-model="form.rotation_order" :min="0" input-class="full-input" />
+          </label>
 
-            <template v-else>
-              <label>
-                <span>Context window</span>
-                <InputNumber v-model="form.contextWindow" :min="1" input-class="full-input" />
-              </label>
-              <label>
-                <span>Max output</span>
-                <InputNumber v-model="form.maxOutputTokens" :min="1" input-class="full-input" />
-              </label>
-              <label>
-                <span>Temperature</span>
-                <InputNumber v-model="form.temperature" :min="0" :max="2" :step="0.1" :min-fraction-digits="1" input-class="full-input" />
-              </label>
-            </template>
+          <label class="span-1">
+            <span>weight</span>
+            <InputNumber v-model="form.weight" :min="1" input-class="full-input" />
+          </label>
 
-            <label>
-              <span>Timeout seconds</span>
-              <InputNumber v-model="form.timeoutSeconds" :min="1" input-class="full-input" />
-            </label>
+          <label class="span-1">
+            <span>top_k</span>
+            <InputNumber v-model="form.top_k" :min="0" input-class="full-input" />
+          </label>
 
-            <label>
-              <span>RPM quota</span>
-              <InputNumber v-model="form.minuteQuota" :min="0" input-class="full-input" />
-            </label>
+          <label class="span-2">
+            <span>temperature</span>
+            <InputNumber v-model="form.temperature" :min="0" :max="2" :step="0.1" :min-fraction-digits="1" input-class="full-input" />
+          </label>
 
-            <label>
-              <span>RPD quota</span>
-              <InputNumber v-model="form.dailyQuota" :min="0" input-class="full-input" />
-            </label>
+          <label class="span-2">
+            <span>top_p</span>
+            <InputNumber v-model="form.top_p" :min="0" :max="1" :step="0.05" :min-fraction-digits="2" input-class="full-input" />
+          </label>
 
-            <label class="switch-row">
-              <span>Default profile</span>
-              <ToggleSwitch v-model="form.defaultProfile" />
-            </label>
+          <label class="span-3">
+            <span>max_output_tokens</span>
+            <InputNumber v-model="form.max_output_tokens" :min="1" input-class="full-input" />
+          </label>
 
-            <Button class="submit-button" type="submit" icon="pi pi-plus" label="Add profile" />
-          </form>
-        </template>
-      </Card>
+          <label class="span-2">
+            <span>timeout_seconds</span>
+            <InputNumber v-model="form.timeout_seconds" :min="1" input-class="full-input" />
+          </label>
 
-      <Card class="profile-table-card">
-        <template #title>AI API profiles</template>
-        <template #content>
-          <DataTable
-            :value="apiEntries"
-            data-key="id"
-            scrollable
-            scroll-height="640px"
-            table-style="min-width: 2280px"
-            size="small"
+          <label class="span-2">
+            <span>minute_request_count</span>
+            <InputNumber v-model="form.minute_request_count" :min="0" input-class="full-input" />
+          </label>
+
+          <label class="span-2">
+            <span>daily_request_count</span>
+            <InputNumber v-model="form.daily_request_count" :min="0" input-class="full-input" />
+          </label>
+
+          <label class="span-3">
+            <span>cost_per_1k_input_tokens</span>
+            <InputNumber v-model="form.cost_per_1k_input_tokens" :min="0" :min-fraction-digits="8" input-class="full-input" />
+          </label>
+
+          <label class="span-3">
+            <span>cost_per_1k_output_tokens</span>
+            <InputNumber v-model="form.cost_per_1k_output_tokens" :min="0" :min-fraction-digits="8" input-class="full-input" />
+          </label>
+
+          <label class="span-4">
+            <span>extra_parameters</span>
+            <InputText v-model="form.extra_parameters" placeholder='{"response_format":"json"}' />
+          </label>
+
+          <Button class="submit-button span-2" type="submit" icon="pi pi-plus" label="Add profile" />
+        </form>
+      </template>
+    </Card>
+
+    <Card class="profile-table-card">
+      <template #title>Model profile list</template>
+      <template #content>
+        <DataTable
+          :value="profiles"
+          data-key="id"
+          scrollable
+          scroll-height="620px"
+          table-style="min-width: 3620px"
+          size="small"
+        >
+          <Column
+            v-for="column in editableColumns"
+            :key="column.field"
+            :field="column.field"
+            :header="column.header"
+            :style="{ minWidth: column.width }"
           >
-            <Column
-              v-for="column in editableColumns"
-              :key="column.field"
-              :field="column.field"
-              :header="column.header"
-              :style="{ minWidth: column.width }"
-            >
-              <template #body="{ data }">
-                <div
-                  class="editable-cell"
-                  :class="{ editing: isEditing(data.id, column.field) }"
-                  role="button"
-                  tabindex="0"
-                  @click="startEdit(data.id, column.field)"
-                  @keydown.enter.prevent="startEdit(data.id, column.field)"
-                >
-                  <template v-if="isEditing(data.id, column.field)">
-                    <div class="editor-host" :data-editor-key="`${data.id}:${column.field}`">
-                      <Select
-                        v-if="column.editor === 'select'"
-                        v-model="editTextDraft"
-                        class="cell-editor"
-                        :options="fieldOptions(column.field)"
-                        :option-label="column.field === 'capability' || column.field === 'status' ? 'label' : undefined"
-                        :option-value="column.field === 'capability' || column.field === 'status' ? 'value' : undefined"
-                        @blur="commitEdit"
-                        @change="commitEdit"
-                        @keydown.capture="onEditorKeydown($event, data.id, column.field)"
-                      />
-                      <Password
-                        v-else-if="column.editor === 'password'"
-                        v-model="editTextDraft"
-                        class="cell-editor"
-                        :feedback="false"
-                        toggle-mask
-                        input-class="cell-input"
-                        @blur="commitEdit"
-                        @keydown.capture="onEditorKeydown($event, data.id, column.field)"
-                      />
-                      <InputNumber
-                        v-else-if="column.editor === 'number'"
-                        v-model="editNumberDraft"
-                        class="cell-editor"
-                        input-class="cell-input"
-                        :min="0"
-                        @blur="commitEdit"
-                        @keydown.capture="onEditorKeydown($event, data.id, column.field)"
-                      />
-                      <InputNumber
-                        v-else-if="column.editor === 'decimal'"
-                        v-model="editNumberDraft"
-                        class="cell-editor"
-                        input-class="cell-input"
-                        :min="0"
-                        :max="2"
-                        :step="0.1"
-                        :min-fraction-digits="1"
-                        @blur="commitEdit"
-                        @keydown.capture="onEditorKeydown($event, data.id, column.field)"
-                      />
-                      <ToggleSwitch
-                        v-else-if="column.editor === 'switch'"
-                        v-model="editBooleanDraft"
-                        @blur="commitEdit"
-                        @change="commitEdit"
-                        @keydown.capture="onEditorKeydown($event, data.id, column.field)"
-                      />
-                      <InputText
-                        v-else
-                        v-model="editTextDraft"
-                        class="cell-editor"
-                        @blur="commitEdit"
-                        @keydown.capture="onEditorKeydown($event, data.id, column.field)"
-                      />
-                    </div>
-                  </template>
+            <template #body="{ data }">
+              <div
+                class="editable-cell"
+                :class="{ editing: isEditing(data.id, column.field) }"
+                role="button"
+                @click="startEdit(data.id, column.field)"
+                @keydown.enter.prevent="startEdit(data.id, column.field)"
+              >
+                <template v-if="isEditing(data.id, column.field)">
+                  <select
+                    v-if="column.editor === 'select'"
+                    v-model="editDraft"
+                    class="cell-editor"
+                    :data-editor-key="`${data.id}:${column.field}`"
+                    @blur="onEditorBlur(data.id, column.field)"
+                    @change="commitEdit"
+                    @click.stop
+                    @mousedown.stop
+                    @keydown.capture="onEditorKeydown($event, data.id, column.field)"
+                  >
+                    <option v-for="option in selectOptions(column.field)" :key="option" :value="option">
+                      {{ option }}
+                    </option>
+                  </select>
+                  <input
+                    v-else
+                    v-model="editDraft"
+                    class="cell-editor"
+                    :data-editor-key="`${data.id}:${column.field}`"
+                    :type="column.editor === 'number' || column.editor === 'decimal' ? 'number' : 'text'"
+                    :step="column.editor === 'decimal' ? '0.00000001' : '1'"
+                    @blur="onEditorBlur(data.id, column.field)"
+                    @click.stop
+                    @mousedown.stop
+                    @keydown.capture="onEditorKeydown($event, data.id, column.field)"
+                  />
+                </template>
 
-                  <template v-else-if="column.field === 'status'">
-                    <Tag :value="formatCell(data, column.field)" :severity="statusSeverity(data.status)" />
-                  </template>
+                <template v-else-if="column.field === 'status'">
+                  <Tag :value="formatCell(data, column.field)" :severity="statusSeverity(data.status)" />
+                </template>
 
-                  <template v-else-if="column.field === 'capability'">
-                    <Tag :value="formatCell(data, column.field)" :severity="data.capability === 'embedding' ? 'info' : 'secondary'" />
-                  </template>
-
-                  <template v-else>
-                    <span class="cell-value">{{ formatCell(data, column.field) }}</span>
-                  </template>
-                </div>
-              </template>
-            </Column>
-          </DataTable>
-        </template>
-      </Card>
-    </section>
+                <template v-else>
+                  <span class="cell-value">{{ formatCell(data, column.field) }}</span>
+                </template>
+              </div>
+            </template>
+          </Column>
+        </DataTable>
+      </template>
+    </Card>
   </section>
 </template>
 
@@ -650,8 +584,7 @@ function setTheme(value: ThemeMode) {
   justify-content: space-between;
 }
 
-.eyebrow,
-.metric-label {
+.eyebrow {
   display: block;
   color: var(--muted-text);
   font-size: 12px;
@@ -662,7 +595,7 @@ function setTheme(value: ThemeMode) {
 .dashboard-header h1 {
   margin: 4px 0 8px;
   color: var(--text-color);
-  font-size: 30px;
+  font-size: 28px;
   line-height: 1.15;
 }
 
@@ -673,46 +606,21 @@ function setTheme(value: ThemeMode) {
   line-height: 1.55;
 }
 
-.theme-control {
-  flex: 0 0 auto;
-}
-
 .theme-option {
   display: inline-flex;
   gap: 8px;
   align-items: center;
 }
 
-.metric-strip {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 12px;
-}
-
-.metric-strip :deep(.p-card-body) {
-  padding: 16px;
-}
-
-.metric-strip strong {
-  display: block;
-  margin-top: 6px;
-  color: var(--text-color);
-  font-size: 28px;
-}
-
-.admin-layout {
-  display: grid;
-  grid-template-columns: minmax(320px, 390px) minmax(0, 1fr);
-  gap: 16px;
-  align-items: start;
-}
-
 .profile-form {
   display: grid;
-  gap: 13px;
+  grid-template-columns: repeat(10, minmax(0, 1fr));
+  gap: 12px;
+  align-items: end;
 }
 
 .profile-form label {
+  min-width: 0;
   display: grid;
   gap: 6px;
   color: var(--text-color);
@@ -720,13 +628,15 @@ function setTheme(value: ThemeMode) {
 }
 
 .profile-form label > span {
+  overflow: hidden;
   color: var(--muted-text);
   font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .profile-form :deep(.p-inputtext),
 .profile-form :deep(.p-select),
-.profile-form :deep(.p-password),
 .profile-form :deep(.p-inputnumber) {
   width: 100%;
 }
@@ -735,9 +645,20 @@ function setTheme(value: ThemeMode) {
   width: 100%;
 }
 
-.switch-row {
-  grid-template-columns: 1fr auto;
-  align-items: center;
+.span-1 {
+  grid-column: span 1;
+}
+
+.span-2 {
+  grid-column: span 2;
+}
+
+.span-3 {
+  grid-column: span 3;
+}
+
+.span-4 {
+  grid-column: span 4;
 }
 
 .submit-button {
@@ -753,24 +674,32 @@ function setTheme(value: ThemeMode) {
 }
 
 .editable-cell {
-  min-height: 34px;
+  width: 100%;
+  min-height: 32px;
   display: flex;
   align-items: center;
   border: 1px solid transparent;
-  border-radius: 6px;
-  padding: 3px 6px;
+  border-radius: 4px;
+  padding: 0 6px;
+  background: transparent;
+  color: inherit;
   cursor: text;
+  text-align: left;
 }
 
 .editable-cell:hover {
-  border-color: var(--border-color);
-  background: color-mix(in srgb, var(--primary-color) 7%, transparent);
+  border-color: color-mix(in srgb, var(--primary-color) 38%, var(--border-color));
+  background: color-mix(in srgb, var(--primary-color) 5%, transparent);
+}
+
+.editable-cell:focus {
+  outline: none;
 }
 
 .editable-cell.editing {
   border-color: var(--primary-color);
   background: var(--bg-color);
-  cursor: default;
+  padding: 0;
 }
 
 .cell-value {
@@ -780,13 +709,21 @@ function setTheme(value: ThemeMode) {
   white-space: nowrap;
 }
 
-.editor-host,
-.cell-editor,
-.cell-editor :deep(.p-inputtext),
-.cell-editor :deep(.p-select),
-.cell-editor :deep(.p-password),
-.cell-editor :deep(.cell-input) {
+.cell-editor {
   width: 100%;
+  height: 30px;
+  border: 0;
+  border-radius: 4px;
+  outline: 0;
+  background: transparent;
+  color: var(--text-color);
+  font: inherit;
+}
+
+.cell-editor:focus {
+  border: 0;
+  box-shadow: none;
+  outline: 0;
 }
 
 .profile-table-card :deep(.p-datatable-thead > tr > th) {
@@ -794,12 +731,17 @@ function setTheme(value: ThemeMode) {
 }
 
 .profile-table-card :deep(.p-datatable-tbody > tr > td) {
-  padding: 6px 8px;
+  padding: 5px 8px;
 }
 
 @media (max-width: 1180px) {
-  .admin-layout {
-    grid-template-columns: 1fr;
+  .profile-form {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+
+  .span-4,
+  .span-3 {
+    grid-column: span 3;
   }
 }
 
@@ -808,8 +750,15 @@ function setTheme(value: ThemeMode) {
     display: grid;
   }
 
-  .metric-strip {
+  .profile-form {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .span-1,
+  .span-2,
+  .span-3,
+  .span-4 {
+    grid-column: span 2;
   }
 }
 </style>
