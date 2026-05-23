@@ -15,6 +15,7 @@ from app.schemas.ai_gateway import (
     AIAPIKeyStatusUpdate,
     AIModelCatalogCreate,
     AIProviderCreate,
+    AIProviderUpdate,
     EmbeddingModelProfileCreate,
     EmbeddingModelProfileUpdate,
     EmbeddingRotationPoolCreate,
@@ -52,6 +53,27 @@ class AIAdminService:
         return self._commit_or_conflict(
             lambda: self.repository.create_provider(payload.model_dump()),
             "Provider code already exists.",
+        )
+
+    def update_provider(self, provider_id: UUID, payload: AIProviderUpdate):
+        provider = self.repository.get_provider(provider_id)
+        if provider is None:
+            raise AIAdminNotFoundError("Provider not found.")
+
+        values = payload.model_dump(exclude_unset=True)
+        return self._commit_or_conflict(
+            lambda: self.repository.update_provider(provider, values),
+            "Provider code already exists.",
+        )
+
+    def delete_provider(self, provider_id: UUID) -> None:
+        provider = self.repository.get_provider(provider_id)
+        if provider is None:
+            raise AIAdminNotFoundError("Provider not found.")
+
+        self._commit_or_conflict(
+            lambda: self.repository.delete_provider(provider),
+            "Provider is still referenced by API keys, models, or profiles.",
         )
 
     def list_api_keys(self) -> list[AIAPIKeyResponse]:

@@ -15,6 +15,7 @@ import Tag from 'primevue/tag'
 import { type ThemeMode, useThemePreference } from '@/composables/useThemePreference'
 
 type ApiStatus = 'active' | 'cooldown' | 'locked' | 'disabled'
+type PlatformTab = 'model-profiles' | 'providers'
 
 type EditableField =
   | 'pool_id'
@@ -91,6 +92,22 @@ interface LLMModelProfileResponse {
   extra_parameters: Record<string, unknown>
 }
 
+interface AIProviderResponse {
+  id: string
+  code: string
+  display_name: string
+  provider_kind: string
+  base_url: string | null
+  auth_type: string
+  is_enabled: boolean
+  is_locked: boolean
+  lock_reason: string | null
+  default_headers: Record<string, unknown>
+  provider_config: Record<string, unknown>
+  created_at: string
+  updated_at: string
+}
+
 interface EditableColumn {
   field: EditableField
   header: string
@@ -101,6 +118,10 @@ interface EditableColumn {
 const STORAGE_KEY = 'raas-platform-admin-model-profiles-v2'
 const API_BASE = '/api/v1/platform/ai'
 
+const tabs: { label: string; value: PlatformTab }[] = [
+  { label: 'Model Profiles', value: 'model-profiles' },
+  { label: 'Providers', value: 'providers' },
+]
 const statusOptions: ApiStatus[] = ['active', 'cooldown', 'locked', 'disabled']
 const providerOptions = ref(['openai', 'google', 'groq', 'openrouter', 'cohere', 'dashscope', 'zhipuai', 'custom'])
 const themeOptions: { label: string; value: ThemeMode; icon: string }[] = [
@@ -162,11 +183,25 @@ const fallbackEntries: ApiModelProfile[] = [
 
 const { themeMode, setThemeMode } = useThemePreference()
 const router = useRouter()
+const activeTab = ref<PlatformTab>('model-profiles')
 const profiles = ref<ApiModelProfile[]>(loadEntries())
+const providers = ref<AIProviderResponse[]>([])
 const editingCell = ref<{ rowId: string; field: EditableField } | null>(null)
 const editDraft = ref('')
 const isLoading = ref(false)
 const feedback = ref('')
+const providerForm = reactive({
+  code: '',
+  display_name: '',
+  provider_kind: 'litellm',
+  base_url: '',
+  auth_type: 'api_key',
+  is_enabled: true,
+  is_locked: false,
+  lock_reason: '',
+  default_headers: '{}',
+  provider_config: '{}',
+})
 
 const form = reactive<Omit<ApiModelProfile, 'id' | 'status'>>({
   pool_id: '',
@@ -222,10 +257,11 @@ async function loadModelProfiles() {
   feedback.value = ''
   try {
     const [providerResponse, profileResponse] = await Promise.all([
-      axios.get<{ id: string }[]>(`${API_BASE}/providers`),
+      axios.get<AIProviderResponse[]>(`${API_BASE}/providers`),
       axios.get<LLMModelProfileResponse[]>(`${API_BASE}/llm/model-profiles`),
     ])
 
+    providers.value = providerResponse.data
     if (providerResponse.data.length) {
       providerOptions.value = providerResponse.data.map((provider) => provider.id)
       const firstProviderId = providerOptions.value[0]
@@ -242,6 +278,104 @@ async function loadModelProfiles() {
   } finally {
     isLoading.value = false
   }
+}
+
+async function addProvider() {
+  if (!providerForm.code.trim() || !providerForm.display_name.trim()) return
+
+  feedback.value = ''
+  try {
+    const response = await axios.post<AIProviderResponse>(`${API_BASE}/providers`, providerPayload())
+    providers.value = [...providers.value, response.data].sort((left, right) => left.code.localeCompare(right.code))
+    syncProviderOptions()
+    resetProviderForm()
+    feedback.value = 'Saved provider to PostgreSQL.'
+  } catch (error) {
+    feedback.value = messageFromError(error)
+  }
+}
+
+async function toggleProviderStatus(provider: AIProviderResponse) {
+  feedback.value = ''
+  try {
+    const response = await axios.patch<AIProviderResponse>(
+      `${API_BASE}/providers/${provider.id}`,
+      {
+        is_enabled: !provider.is_enabled,
+        is_locked: provider.is_locked && !provider.is_enabled ? false : provider.is_locked,
+      },
+    )
+    providers.value = providers.value.map((entry) => (entry.id === provider.id ? response.data : entry))
+    syncProviderOptions()
+    feedback.value = 'Updated provider status in PostgreSQL.'
+  } catch (error) {
+    feedback.value = messageFromError(error)
+  }
+}
+
+async function deleteProvider(provider: AIProviderResponse) {
+  if (!window.confirm(`Delete provider "${provider.display_name}" permanently?`)) return
+
+  feedback.value = ''
+  try {
+    await axios.delete(`${API_BASE}/providers/${provider.id}`)
+    providers.value = providers.value.filter((entry) => entry.id !== provider.id)
+    syncProviderOptions()
+    feedback.value = 'Deleted provider from PostgreSQL.'
+  } catch (error) {
+    feedback.value = messageFromError(error)
+  }
+}
+
+function providerPayload() {
+  return {
+    code: providerForm.code.trim(),
+    display_name: providerForm.display_name.trim(),
+    provider_kind: providerForm.provider_kind.trim() || 'litellm',
+    base_url: providerForm.base_url.trim() || null,
+    auth_type: providerForm.auth_type.trim() || 'api_key',
+    is_enabled: providerForm.is_enabled,
+    is_locked: providerForm.is_locked,
+    lock_reason: providerForm.lock_reason.trim() || null,
+    default_headers: parseJson(providerForm.default_headers),
+    provider_config: parseJson(providerForm.provider_config),
+  }
+}
+
+function resetProviderForm() {
+  providerForm.code = ''
+  providerForm.display_name = ''
+  providerForm.provider_kind = 'litellm'
+  providerForm.base_url = ''
+  providerForm.auth_type = 'api_key'
+  providerForm.is_enabled = true
+  providerForm.is_locked = false
+  providerForm.lock_reason = ''
+  providerForm.default_headers = '{}'
+  providerForm.provider_config = '{}'
+}
+
+function syncProviderOptions() {
+  if (providers.value.length) {
+    providerOptions.value = providers.value.map((provider) => provider.id)
+    const firstProviderId = providerOptions.value[0]
+    if (firstProviderId && !providerOptions.value.includes(form.provider_id)) {
+      form.provider_id = firstProviderId
+    }
+  }
+}
+
+function providerStatus(provider: AIProviderResponse): ApiStatus {
+  if (provider.is_locked) return 'locked'
+  return provider.is_enabled ? 'active' : 'disabled'
+}
+
+function providerStatusActionLabel(provider: AIProviderResponse) {
+  return provider.is_enabled ? 'Disable' : 'Active'
+}
+
+function providerStatusActionSeverity(provider: AIProviderResponse) {
+  return provider.is_enabled ? 'danger' : 'success'
 }
 
 async function addModelProfile() {
@@ -625,6 +759,20 @@ function messageFromError(error: unknown) {
 
     <p v-if="feedback" class="feedback">{{ feedback }}</p>
 
+    <nav class="tab-nav" aria-label="Platform admin sections">
+      <button
+        v-for="tab in tabs"
+        :key="tab.value"
+        class="tab-button"
+        :class="{ active: activeTab === tab.value }"
+        type="button"
+        @click="activeTab = tab.value"
+      >
+        {{ tab.label }}
+      </button>
+    </nav>
+
+    <template v-if="activeTab === 'model-profiles'">
     <Card class="profile-form-card">
       <template #title>Add model profile</template>
       <template #content>
@@ -829,6 +977,128 @@ function messageFromError(error: unknown) {
         </DataTable>
       </template>
     </Card>
+    </template>
+
+    <template v-else>
+      <Card class="profile-form-card">
+        <template #title>Add provider</template>
+        <template #content>
+          <form class="profile-form" @submit.prevent="addProvider">
+            <label class="span-2">
+              <span>code</span>
+              <InputText v-model="providerForm.code" placeholder="openai" />
+            </label>
+
+            <label class="span-3">
+              <span>display_name</span>
+              <InputText v-model="providerForm.display_name" placeholder="OpenAI" />
+            </label>
+
+            <label class="span-2">
+              <span>provider_kind</span>
+              <InputText v-model="providerForm.provider_kind" placeholder="litellm" />
+            </label>
+
+            <label class="span-2">
+              <span>auth_type</span>
+              <InputText v-model="providerForm.auth_type" placeholder="api_key" />
+            </label>
+
+            <label class="span-4">
+              <span>base_url</span>
+              <InputText v-model="providerForm.base_url" placeholder="https://..." />
+            </label>
+
+            <label class="span-2 provider-toggle">
+              <input v-model="providerForm.is_enabled" type="checkbox" />
+              <span>is_enabled</span>
+            </label>
+
+            <label class="span-2 provider-toggle">
+              <input v-model="providerForm.is_locked" type="checkbox" />
+              <span>is_locked</span>
+            </label>
+
+            <label class="span-4">
+              <span>lock_reason</span>
+              <InputText v-model="providerForm.lock_reason" placeholder="optional" />
+            </label>
+
+            <label class="span-4">
+              <span>default_headers</span>
+              <InputText v-model="providerForm.default_headers" placeholder='{"x-header":"value"}' />
+            </label>
+
+            <label class="span-4">
+              <span>provider_config</span>
+              <InputText v-model="providerForm.provider_config" placeholder='{"region":"us"}' />
+            </label>
+
+            <Button class="submit-button span-2" type="submit" icon="pi pi-plus" label="Add provider" :loading="isLoading" />
+          </form>
+        </template>
+      </Card>
+
+      <Card class="profile-table-card">
+        <template #title>Provider list</template>
+        <template #content>
+          <DataTable
+            :value="providers"
+            data-key="id"
+            scrollable
+            scroll-height="620px"
+            table-style="min-width: 1600px"
+            size="small"
+            :loading="isLoading"
+          >
+            <Column field="code" header="code" style="min-width: 140px" />
+            <Column field="display_name" header="display_name" style="min-width: 200px" />
+            <Column field="provider_kind" header="provider_kind" style="min-width: 150px" />
+            <Column field="base_url" header="base_url" style="min-width: 260px">
+              <template #body="{ data }">{{ data.base_url || '—' }}</template>
+            </Column>
+            <Column field="auth_type" header="auth_type" style="min-width: 120px" />
+            <Column header="status" style="min-width: 120px">
+              <template #body="{ data }">
+                <Tag :value="providerStatus(data)" :severity="statusSeverity(providerStatus(data))" />
+              </template>
+            </Column>
+            <Column field="lock_reason" header="lock_reason" style="min-width: 220px">
+              <template #body="{ data }">{{ data.lock_reason || '—' }}</template>
+            </Column>
+            <Column header="default_headers" style="min-width: 260px">
+              <template #body="{ data }">
+                <span class="cell-value">{{ JSON.stringify(data.default_headers || {}) }}</span>
+              </template>
+            </Column>
+            <Column header="provider_config" style="min-width: 260px">
+              <template #body="{ data }">
+                <span class="cell-value">{{ JSON.stringify(data.provider_config || {}) }}</span>
+              </template>
+            </Column>
+            <Column header="action" frozen align-frozen="right" style="min-width: 170px">
+              <template #body="{ data }">
+                <div class="action-row">
+                  <Button
+                    :label="providerStatusActionLabel(data)"
+                    :severity="providerStatusActionSeverity(data)"
+                    size="small"
+                    @click="toggleProviderStatus(data)"
+                  />
+                  <Button
+                    icon="pi pi-trash"
+                    severity="danger"
+                    size="small"
+                    aria-label="Delete provider"
+                    @click="deleteProvider(data)"
+                  />
+                </div>
+              </template>
+            </Column>
+          </DataTable>
+        </template>
+      </Card>
+    </template>
   </section>
 </template>
 
@@ -879,6 +1149,28 @@ function messageFromError(error: unknown) {
   font-weight: 650;
 }
 
+.tab-nav {
+  display: flex;
+  gap: 6px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.tab-button {
+  min-height: 38px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--muted-text);
+  padding: 0 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.tab-button.active {
+  border-bottom-color: var(--primary-color);
+  color: var(--primary-color);
+}
+
 .profile-form {
   display: grid;
   grid-template-columns: repeat(10, minmax(0, 1fr));
@@ -910,6 +1202,17 @@ function messageFromError(error: unknown) {
 
 .profile-form :deep(.full-input) {
   width: 100%;
+}
+
+.provider-toggle {
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  min-height: 38px;
+}
+
+.provider-toggle input {
+  width: 16px;
+  height: 16px;
 }
 
 .span-1 {

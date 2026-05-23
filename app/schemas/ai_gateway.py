@@ -29,6 +29,19 @@ class AIProviderResponse(AIProviderCreate):
     updated_at: datetime
 
 
+class AIProviderUpdate(BaseModel):
+    code: str | None = Field(default=None, min_length=1, max_length=80)
+    display_name: str | None = Field(default=None, min_length=1, max_length=255)
+    provider_kind: str | None = Field(default=None, max_length=80)
+    base_url: str | None = None
+    auth_type: str | None = Field(default=None, max_length=50)
+    is_enabled: bool | None = None
+    is_locked: bool | None = None
+    lock_reason: str | None = None
+    default_headers: dict[str, Any] | None = None
+    provider_config: dict[str, Any] | None = None
+
+
 class AIAPIKeyCreate(BaseModel):
     provider_id: UUID
     name: str = Field(min_length=1, max_length=255)

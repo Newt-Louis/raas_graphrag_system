@@ -16,6 +16,7 @@ from app.schemas.ai_gateway import (
     AIModelCatalogResponse,
     AIProviderCreate,
     AIProviderResponse,
+    AIProviderUpdate,
     EmbeddingModelProfileCreate,
     EmbeddingModelProfileResponse,
     EmbeddingModelProfileUpdate,
@@ -55,6 +56,24 @@ def create_provider(
     service: AIAdminService = Depends(get_ai_admin_service),
 ):
     return _run_service(lambda: service.create_provider(payload))
+
+
+@router.patch("/providers/{provider_id}", response_model=AIProviderResponse)
+def update_provider(
+    provider_id: UUID,
+    payload: AIProviderUpdate,
+    service: AIAdminService = Depends(get_ai_admin_service),
+):
+    return _run_service(lambda: service.update_provider(provider_id, payload))
+
+
+@router.delete("/providers/{provider_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_provider(
+    provider_id: UUID,
+    service: AIAdminService = Depends(get_ai_admin_service),
+):
+    _run_service(lambda: service.delete_provider(provider_id))
+    return None
 
 
 @router.get("/api-keys", response_model=list[AIAPIKeyResponse])

@@ -34,6 +34,17 @@ class AIAdminRepository:
         self.db.refresh(provider)
         return provider
 
+    def update_provider(self, provider: AIProvider, values: dict) -> AIProvider:
+        for key, value in values.items():
+            setattr(provider, key, value)
+        self.db.flush()
+        self.db.refresh(provider)
+        return provider
+
+    def delete_provider(self, provider: AIProvider) -> None:
+        self.db.delete(provider)
+        self.db.flush()
+
     def list_api_keys(self) -> Sequence[AIAPIKey]:
         return self.db.scalars(select(AIAPIKey).order_by(AIAPIKey.created_at.desc())).all()
 
