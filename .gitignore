@@ -232,6 +232,5 @@ test_data/
 sample_data/
 
 # Documentation builds
-docs/_build/
-docs/.doctrees/
+docs/*
 site/

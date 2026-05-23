@@ -12,6 +12,7 @@ from app.repositories.ai_gateway import AIAdminRepository
 from app.schemas.ai_gateway import (
     AIAPIKeyCreate,
     AIAPIKeyResponse,
+    AIAPIKeyStatusUpdate,
     AIModelCatalogCreate,
     AIProviderCreate,
     EmbeddingModelProfileCreate,
@@ -74,6 +75,36 @@ class AIAdminService:
         )
         return self._api_key_response(api_key)
 
+    def update_api_key_status(self, api_key_id: UUID, payload: AIAPIKeyStatusUpdate) -> AIAPIKeyResponse:
+        api_key = self.repository.get_api_key(api_key_id)
+        if api_key is None:
+            raise AIAdminNotFoundError("API key not found.")
+
+        status_value = payload.status.lower()
+        values = {
+            "status": status_value,
+            "is_enabled": status_value == "active",
+            "is_locked": status_value == "locked",
+        }
+        if status_value == "cooldown":
+            values["is_enabled"] = True
+
+        updated = self._commit_or_conflict(
+            lambda: self.repository.update_api_key(api_key, values),
+            "API key status could not be updated.",
+        )
+        return self._api_key_response(updated)
+
+    def delete_api_key(self, api_key_id: UUID) -> None:
+        api_key = self.repository.get_api_key(api_key_id)
+        if api_key is None:
+            raise AIAdminNotFoundError("API key not found.")
+
+        self._commit_or_conflict(
+            lambda: self.repository.delete_api_key(api_key),
+            "API key is still referenced by model profiles.",
+        )
+
     def list_models(self):
         return self.repository.list_models()
 
@@ -126,6 +157,16 @@ class AIAdminService:
         return self._commit_or_conflict(
             lambda: self.repository.update_llm_profile(profile, values),
             "LLM model profile rotation_order already exists in this pool.",
+        )
+
+    def delete_llm_profile(self, profile_id: UUID) -> None:
+        profile = self.repository.get_llm_profile(profile_id)
+        if profile is None:
+            raise AIAdminNotFoundError("LLM model profile not found.")
+
+        self._commit_or_conflict(
+            lambda: self.repository.delete_llm_profile(profile),
+            "LLM model profile could not be deleted.",
         )
 
     def list_embedding_pools(self):

@@ -14,6 +14,11 @@ const router = createRouter({
       component: () => import('@/views/PlatformAdminView.vue'),
     },
     {
+      path: '/platform/api-ai-keys/:apiKeyId/test',
+      name: 'api-ai-key-test',
+      component: () => import('@/views/ApiAiKeyTestView.vue'),
+    },
+    {
       path: '/admin/documents',
       name: 'customer-documents',
       component: () => import('@/views/DocumentAdminView.vue'),

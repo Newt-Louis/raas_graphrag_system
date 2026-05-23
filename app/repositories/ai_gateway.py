@@ -37,12 +37,26 @@ class AIAdminRepository:
     def list_api_keys(self) -> Sequence[AIAPIKey]:
         return self.db.scalars(select(AIAPIKey).order_by(AIAPIKey.created_at.desc())).all()
 
+    def get_api_key(self, api_key_id: UUID) -> AIAPIKey | None:
+        return self.db.get(AIAPIKey, api_key_id)
+
     def create_api_key(self, values: dict) -> AIAPIKey:
         api_key = AIAPIKey(**values)
         self.db.add(api_key)
         self.db.flush()
         self.db.refresh(api_key)
         return api_key
+
+    def update_api_key(self, api_key: AIAPIKey, values: dict) -> AIAPIKey:
+        for key, value in values.items():
+            setattr(api_key, key, value)
+        self.db.flush()
+        self.db.refresh(api_key)
+        return api_key
+
+    def delete_api_key(self, api_key: AIAPIKey) -> None:
+        self.db.delete(api_key)
+        self.db.flush()
 
     def list_models(self) -> Sequence[AIModelCatalog]:
         return self.db.scalars(select(AIModelCatalog).order_by(AIModelCatalog.model_name)).all()
@@ -95,6 +109,10 @@ class AIAdminRepository:
         self.db.flush()
         self.db.refresh(profile)
         return profile
+
+    def delete_llm_profile(self, profile: LLMModelProfile) -> None:
+        self.db.delete(profile)
+        self.db.flush()
 
     def list_embedding_pools(self) -> Sequence[EmbeddingRotationPool]:
         return self.db.scalars(select(EmbeddingRotationPool).order_by(EmbeddingRotationPool.name)).all()

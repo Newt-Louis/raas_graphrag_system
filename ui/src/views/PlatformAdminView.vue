@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import { nextTick, reactive, ref, watch } from 'vue'
+import { nextTick, onMounted, reactive, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
+import axios from 'axios'
 import Button from 'primevue/button'
 import Card from 'primevue/card'
 import Column from 'primevue/column'
@@ -62,6 +64,33 @@ interface ApiModelProfile {
   status: ApiStatus
 }
 
+interface LLMModelProfileResponse {
+  id: string
+  pool_id: string
+  provider_id: string
+  api_key_id: string
+  model_id: string | null
+  profile_name: string
+  model_name: string
+  api_base: string | null
+  endpoint_id: string | null
+  rotation_order: number
+  weight: number
+  is_enabled: boolean
+  is_locked: boolean
+  today_quota_exhausted: boolean
+  daily_request_count: number
+  minute_request_count: number
+  temperature: number | null
+  top_p: number | null
+  top_k: number | null
+  max_output_tokens: number | null
+  timeout_seconds: number
+  cost_per_1k_input_tokens: number | null
+  cost_per_1k_output_tokens: number | null
+  extra_parameters: Record<string, unknown>
+}
+
 interface EditableColumn {
   field: EditableField
   header: string
@@ -70,9 +99,10 @@ interface EditableColumn {
 }
 
 const STORAGE_KEY = 'raas-platform-admin-model-profiles-v2'
+const API_BASE = '/api/v1/platform/ai'
 
 const statusOptions: ApiStatus[] = ['active', 'cooldown', 'locked', 'disabled']
-const providerOptions = ['openai', 'google', 'groq', 'openrouter', 'cohere', 'dashscope', 'zhipuai', 'custom']
+const providerOptions = ref(['openai', 'google', 'groq', 'openrouter', 'cohere', 'dashscope', 'zhipuai', 'custom'])
 const themeOptions: { label: string; value: ThemeMode; icon: string }[] = [
   { label: 'Light', value: 'light', icon: 'pi pi-sun' },
   { label: 'Dark', value: 'dark', icon: 'pi pi-moon' },
@@ -100,7 +130,7 @@ const editableColumns: EditableColumn[] = [
   { field: 'cost_per_1k_input_tokens', header: 'cost_per_1k_input_tokens', width: '210px', editor: 'decimal' },
   { field: 'cost_per_1k_output_tokens', header: 'cost_per_1k_output_tokens', width: '220px', editor: 'decimal' },
   { field: 'extra_parameters', header: 'extra_parameters', width: '260px', editor: 'json' },
-  { field: 'status', header: 'status', width: '120px', editor: 'select' },
+  { field: 'status', header: 'status', width: '60', editor: 'select' },
 ]
 
 const fallbackEntries: ApiModelProfile[] = [
@@ -131,9 +161,12 @@ const fallbackEntries: ApiModelProfile[] = [
 ]
 
 const { themeMode, setThemeMode } = useThemePreference()
+const router = useRouter()
 const profiles = ref<ApiModelProfile[]>(loadEntries())
 const editingCell = ref<{ rowId: string; field: EditableField } | null>(null)
 const editDraft = ref('')
+const isLoading = ref(false)
+const feedback = ref('')
 
 const form = reactive<Omit<ApiModelProfile, 'id' | 'status'>>({
   pool_id: '',
@@ -158,6 +191,10 @@ const form = reactive<Omit<ApiModelProfile, 'id' | 'status'>>({
   extra_parameters: '{}',
 })
 
+onMounted(() => {
+  void loadModelProfiles()
+})
+
 watch(
   profiles,
   (entries) => {
@@ -180,27 +217,62 @@ function loadEntries(): ApiModelProfile[] {
   }
 }
 
-function addModelProfile() {
+async function loadModelProfiles() {
+  isLoading.value = true
+  feedback.value = ''
+  try {
+    const [providerResponse, profileResponse] = await Promise.all([
+      axios.get<{ id: string }[]>(`${API_BASE}/providers`),
+      axios.get<LLMModelProfileResponse[]>(`${API_BASE}/llm/model-profiles`),
+    ])
+
+    if (providerResponse.data.length) {
+      providerOptions.value = providerResponse.data.map((provider) => provider.id)
+      const firstProviderId = providerOptions.value[0]
+      if (firstProviderId && !providerOptions.value.includes(form.provider_id)) {
+        form.provider_id = firstProviderId
+      }
+    }
+
+    if (profileResponse.data.length) {
+      profiles.value = profileResponse.data.map(fromApiProfile)
+    }
+  } catch (error) {
+    feedback.value = messageFromError(error)
+  } finally {
+    isLoading.value = false
+  }
+}
+
+async function addModelProfile() {
   if (!form.pool_id.trim() || !form.provider_id.trim() || !form.api_key_id.trim() || !form.profile_name.trim() || !form.model_name.trim()) {
     return
   }
 
-  profiles.value = [
-    {
-      id: crypto.randomUUID(),
-      ...normalizeForm(),
-      status: 'active',
-    },
-    ...profiles.value,
-  ]
+  feedback.value = ''
+  try {
+    const response = await axios.post<LLMModelProfileResponse>(
+      `${API_BASE}/llm/model-profiles`,
+      toApiPayload({
+        id: '',
+        ...normalizeForm(),
+        status: 'active',
+      }),
+    )
 
-  form.api_key_id = ''
-  form.model_id = ''
-  form.profile_name = ''
-  form.model_name = ''
-  form.api_base = ''
-  form.endpoint_id = ''
-  form.extra_parameters = '{}'
+    profiles.value = [fromApiProfile(response.data), ...profiles.value]
+
+    form.api_key_id = ''
+    form.model_id = ''
+    form.profile_name = ''
+    form.model_name = ''
+    form.api_base = ''
+    form.endpoint_id = ''
+    form.extra_parameters = '{}'
+    feedback.value = 'Saved model profile to PostgreSQL.'
+  } catch (error) {
+    feedback.value = messageFromError(error)
+  }
 }
 
 function normalizeForm(): Omit<ApiModelProfile, 'id' | 'status'> {
@@ -237,8 +309,10 @@ function isEditing(rowId: string, field: EditableField) {
 }
 
 async function startEdit(rowId: string, field: EditableField) {
+  if (!canEdit(field)) return
+
   if (editingCell.value && !isEditing(rowId, field)) {
-    commitEdit()
+    await commitEdit()
   }
 
   const row = profiles.value.find((entry) => entry.id === rowId)
@@ -250,7 +324,7 @@ async function startEdit(rowId: string, field: EditableField) {
   focusEditor(rowId, field)
 }
 
-function commitEdit() {
+async function commitEdit() {
   if (!editingCell.value) return
 
   const { rowId, field } = editingCell.value
@@ -263,6 +337,7 @@ function commitEdit() {
 
   ;(row[field] as unknown) = normalizeDraft(column, editDraft.value)
   editingCell.value = null
+  await saveModelProfile(row)
 }
 
 function cancelEdit() {
@@ -291,7 +366,7 @@ async function onEditorKeydown(event: KeyboardEvent, rowId: string, field: Edita
   if (event.key === 'Enter') {
     event.preventDefault()
     event.stopPropagation()
-    commitEdit()
+    await commitEdit()
     if (event.currentTarget instanceof HTMLElement) {
       event.currentTarget.blur()
     }
@@ -302,7 +377,7 @@ async function onEditorKeydown(event: KeyboardEvent, rowId: string, field: Edita
     event.preventDefault()
     event.stopPropagation()
     const nextCell = getNextCell(rowId, field)
-    commitEdit()
+    await commitEdit()
     if (nextCell) {
       await startEdit(nextCell.rowId, nextCell.field)
     }
@@ -321,7 +396,7 @@ async function onEditorKeydown(event: KeyboardEvent, rowId: string, field: Edita
 
 function onEditorBlur(rowId: string, field: EditableField) {
   if (!isEditing(rowId, field)) return
-  commitEdit()
+  void commitEdit()
 }
 
 function focusEditor(rowId: string, field: EditableField) {
@@ -340,6 +415,10 @@ function normalizeDraft(column: EditableColumn, value: string) {
   return value.trim()
 }
 
+function canEdit(field: EditableField) {
+  return field !== 'status'
+}
+
 function formatCell(row: ApiModelProfile, field: EditableField) {
   const value = row[field]
   if (value === null || value === undefined || value === '') return '—'
@@ -354,13 +433,167 @@ function statusSeverity(status: ApiStatus) {
 }
 
 function selectOptions(field: EditableField) {
-  if (field === 'provider_id') return providerOptions
+  if (field === 'provider_id') return providerOptions.value
   if (field === 'status') return statusOptions
   return []
 }
 
 function setTheme(value: ThemeMode) {
   setThemeMode(value)
+}
+
+async function saveModelProfile(row: ApiModelProfile) {
+  if (row.id.startsWith('profile-')) return
+
+  feedback.value = ''
+  try {
+    const response = await axios.patch<LLMModelProfileResponse>(
+      `${API_BASE}/llm/model-profiles/${row.id}`,
+      toApiPayload(row),
+    )
+    const updated = fromApiProfile(response.data)
+    profiles.value = profiles.value.map((entry) => (entry.id === row.id ? updated : entry))
+    feedback.value = 'Updated model profile in PostgreSQL.'
+  } catch (error) {
+    feedback.value = messageFromError(error)
+  }
+}
+
+async function toggleModelProfileStatus(row: ApiModelProfile) {
+  const nextStatus: ApiStatus = row.status === 'active' ? 'disabled' : 'active'
+  const updatedRow = { ...row, status: nextStatus }
+
+  if (row.id.startsWith('profile-')) {
+    profiles.value = profiles.value.map((entry) => (entry.id === row.id ? updatedRow : entry))
+    return
+  }
+
+  feedback.value = ''
+  try {
+    const response = await axios.patch<LLMModelProfileResponse>(
+      `${API_BASE}/llm/model-profiles/${row.id}`,
+      toApiPayload(updatedRow),
+    )
+    const updated = fromApiProfile(response.data)
+    profiles.value = profiles.value.map((entry) => (entry.id === row.id ? updated : entry))
+    feedback.value = 'Updated model profile status in PostgreSQL.'
+  } catch (error) {
+    feedback.value = messageFromError(error)
+  }
+}
+
+async function deleteModelProfile(row: ApiModelProfile) {
+  if (!window.confirm(`Delete model profile "${row.profile_name}" permanently?`)) return
+
+  if (row.id.startsWith('profile-')) {
+    profiles.value = profiles.value.filter((entry) => entry.id !== row.id)
+    return
+  }
+
+  feedback.value = ''
+  try {
+    await axios.delete(`${API_BASE}/llm/model-profiles/${row.id}`)
+    profiles.value = profiles.value.filter((entry) => entry.id !== row.id)
+    feedback.value = 'Deleted model profile from PostgreSQL.'
+  } catch (error) {
+    feedback.value = messageFromError(error)
+  }
+}
+
+function openModelProfileTest(row: ApiModelProfile) {
+  void router.push({
+    name: 'api-ai-key-test',
+    params: { apiKeyId: row.api_key_id },
+    query: {
+      name: row.profile_name,
+      model: row.model_name,
+    },
+  })
+}
+
+function statusActionLabel(row: ApiModelProfile) {
+  return row.status === 'active' ? 'Disable' : 'Active'
+}
+
+function statusActionSeverity(row: ApiModelProfile) {
+  return row.status === 'active' ? 'danger' : 'success'
+}
+
+function fromApiProfile(profile: LLMModelProfileResponse): ApiModelProfile {
+  return {
+    id: profile.id,
+    pool_id: profile.pool_id,
+    provider_id: profile.provider_id,
+    api_key_id: profile.api_key_id,
+    model_id: profile.model_id ?? '',
+    profile_name: profile.profile_name,
+    model_name: profile.model_name,
+    api_base: profile.api_base ?? '',
+    endpoint_id: profile.endpoint_id ?? '',
+    rotation_order: profile.rotation_order,
+    weight: profile.weight,
+    daily_request_count: profile.daily_request_count,
+    minute_request_count: profile.minute_request_count,
+    temperature: profile.temperature,
+    top_p: profile.top_p,
+    top_k: profile.top_k,
+    max_output_tokens: profile.max_output_tokens,
+    timeout_seconds: profile.timeout_seconds,
+    cost_per_1k_input_tokens: profile.cost_per_1k_input_tokens,
+    cost_per_1k_output_tokens: profile.cost_per_1k_output_tokens,
+    extra_parameters: JSON.stringify(profile.extra_parameters || {}),
+    status: profile.is_locked
+      ? 'locked'
+      : profile.today_quota_exhausted
+        ? 'cooldown'
+        : profile.is_enabled
+          ? 'active'
+          : 'disabled',
+  }
+}
+
+function toApiPayload(row: Omit<ApiModelProfile, 'id'> | ApiModelProfile) {
+  return {
+    pool_id: row.pool_id,
+    provider_id: row.provider_id,
+    api_key_id: row.api_key_id,
+    model_id: row.model_id || null,
+    profile_name: row.profile_name,
+    model_name: row.model_name,
+    api_base: row.api_base || null,
+    endpoint_id: row.endpoint_id || null,
+    rotation_order: row.rotation_order,
+    weight: row.weight,
+    is_enabled: row.status !== 'disabled',
+    is_locked: row.status === 'locked',
+    today_quota_exhausted: row.status === 'cooldown',
+    daily_request_count: row.daily_request_count,
+    minute_request_count: row.minute_request_count,
+    temperature: row.temperature,
+    top_p: row.top_p,
+    top_k: row.top_k,
+    max_output_tokens: row.max_output_tokens,
+    timeout_seconds: row.timeout_seconds,
+    cost_per_1k_input_tokens: row.cost_per_1k_input_tokens,
+    cost_per_1k_output_tokens: row.cost_per_1k_output_tokens,
+    extra_parameters: parseJson(row.extra_parameters),
+  }
+}
+
+function parseJson(value: string) {
+  try {
+    return JSON.parse(value || '{}')
+  } catch {
+    return {}
+  }
+}
+
+function messageFromError(error: unknown) {
+  if (axios.isAxiosError(error)) {
+    const detail = error.response?.data?.detail
+    return typeof detail === 'string' ? detail : error.message
+  }
+  return error instanceof Error ? error.message : 'Request failed.'
 }
 </script>
 
@@ -389,6 +622,8 @@ function setTheme(value: ThemeMode) {
         </template>
       </SelectButton>
     </header>
+
+    <p v-if="feedback" class="feedback">{{ feedback }}</p>
 
     <Card class="profile-form-card">
       <template #title>Add model profile</template>
@@ -449,27 +684,27 @@ function setTheme(value: ThemeMode) {
             <InputNumber v-model="form.top_k" :min="0" input-class="full-input" />
           </label>
 
-          <label class="span-2">
+          <label class="span-1">
             <span>temperature</span>
             <InputNumber v-model="form.temperature" :min="0" :max="2" :step="0.1" :min-fraction-digits="1" input-class="full-input" />
           </label>
 
-          <label class="span-2">
+          <label class="span-1">
             <span>top_p</span>
             <InputNumber v-model="form.top_p" :min="0" :max="1" :step="0.05" :min-fraction-digits="2" input-class="full-input" />
           </label>
 
-          <label class="span-3">
+          <label class="span-2">
             <span>max_output_tokens</span>
             <InputNumber v-model="form.max_output_tokens" :min="1" input-class="full-input" />
           </label>
 
-          <label class="span-2">
+          <label class="span-1">
             <span>timeout_seconds</span>
             <InputNumber v-model="form.timeout_seconds" :min="1" input-class="full-input" />
           </label>
 
-          <label class="span-2">
+          <label class="span-1">
             <span>minute_request_count</span>
             <InputNumber v-model="form.minute_request_count" :min="0" input-class="full-input" />
           </label>
@@ -479,12 +714,12 @@ function setTheme(value: ThemeMode) {
             <InputNumber v-model="form.daily_request_count" :min="0" input-class="full-input" />
           </label>
 
-          <label class="span-3">
+          <label class="span-2">
             <span>cost_per_1k_input_tokens</span>
             <InputNumber v-model="form.cost_per_1k_input_tokens" :min="0" :min-fraction-digits="8" input-class="full-input" />
           </label>
 
-          <label class="span-3">
+          <label class="span-2">
             <span>cost_per_1k_output_tokens</span>
             <InputNumber v-model="form.cost_per_1k_output_tokens" :min="0" :min-fraction-digits="8" input-class="full-input" />
           </label>
@@ -494,7 +729,7 @@ function setTheme(value: ThemeMode) {
             <InputText v-model="form.extra_parameters" placeholder='{"response_format":"json"}' />
           </label>
 
-          <Button class="submit-button span-2" type="submit" icon="pi pi-plus" label="Add profile" />
+          <Button class="submit-button span-2" type="submit" icon="pi pi-plus" label="Add profile" :loading="isLoading" />
         </form>
       </template>
     </Card>
@@ -507,8 +742,9 @@ function setTheme(value: ThemeMode) {
           data-key="id"
           scrollable
           scroll-height="620px"
-          table-style="min-width: 3620px"
+          table-style="min-width: 3860px"
           size="small"
+          :loading="isLoading"
         >
           <Column
             v-for="column in editableColumns"
@@ -520,12 +756,12 @@ function setTheme(value: ThemeMode) {
             <template #body="{ data }">
               <div
                 class="editable-cell"
-                :class="{ editing: isEditing(data.id, column.field) }"
-                role="button"
+                :class="{ editing: isEditing(data.id, column.field), readonly: !canEdit(column.field) }"
+                :role="canEdit(column.field) ? 'button' : 'cell'"
                 @click="startEdit(data.id, column.field)"
                 @keydown.enter.prevent="startEdit(data.id, column.field)"
               >
-                <template v-if="isEditing(data.id, column.field)">
+                <template v-if="canEdit(column.field) && isEditing(data.id, column.field)">
                   <select
                     v-if="column.editor === 'select'"
                     v-model="editDraft"
@@ -562,6 +798,31 @@ function setTheme(value: ThemeMode) {
                 <template v-else>
                   <span class="cell-value">{{ formatCell(data, column.field) }}</span>
                 </template>
+              </div>
+            </template>
+          </Column>
+          <Column header="action" frozen align-frozen="right" style="min-width: 240px">
+            <template #body="{ data }">
+              <div class="action-row">
+                <Button
+                  :label="statusActionLabel(data)"
+                  :severity="statusActionSeverity(data)"
+                  size="small"
+                  @click="toggleModelProfileStatus(data)"
+                />
+                <Button
+                  icon="pi pi-trash"
+                  severity="danger"
+                  size="small"
+                  aria-label="Delete model profile"
+                  @click="deleteModelProfile(data)"
+                />
+                <Button
+                  label="Test"
+                  severity="info"
+                  size="small"
+                  @click="openModelProfileTest(data)"
+                />
               </div>
             </template>
           </Column>
@@ -610,6 +871,12 @@ function setTheme(value: ThemeMode) {
   display: inline-flex;
   gap: 8px;
   align-items: center;
+}
+
+.feedback {
+  margin: 0;
+  color: var(--muted-text);
+  font-weight: 650;
 }
 
 .profile-form {
@@ -692,6 +959,15 @@ function setTheme(value: ThemeMode) {
   background: color-mix(in srgb, var(--primary-color) 5%, transparent);
 }
 
+.editable-cell.readonly {
+  cursor: default;
+}
+
+.editable-cell.readonly:hover {
+  border-color: transparent;
+  background: transparent;
+}
+
 .editable-cell:focus {
   outline: none;
 }
@@ -732,6 +1008,12 @@ function setTheme(value: ThemeMode) {
 
 .profile-table-card :deep(.p-datatable-tbody > tr > td) {
   padding: 5px 8px;
+}
+
+.action-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
 }
 
 @media (max-width: 1180px) {

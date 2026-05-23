@@ -5,9 +5,9 @@ from pathlib import Path
 from uuid import uuid4
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
-from pydantic import BaseModel, Field
 
 from app.core.config import settings
+from app.schemas.ingest import DocumentIngestResponse, SupportedFormatsResponse
 from app.services.ingestion import DocumentIngestionPipeline
 from app.services.ingestion.storage import IngestionFanoutSink
 from app.services.ingestion.models import ChunkStrategy, ChunkingConfig, DocumentScope
@@ -21,25 +21,6 @@ from app.services.ingestion.parsers import (
 from app.services.vector.factory import get_vector_store
 
 router = APIRouter(prefix="/ingest", tags=["ingest"])
-
-class DocumentIngestResponse(BaseModel):
-    status: str = Field(examples=["ready"])
-    tenant_id: str
-    app_id: str
-    collection_id: str | None = None
-    document_id: str
-    filename: str
-    extension: str
-    sha256: str
-    chunk_strategy: ChunkStrategy
-    stats: dict[str, int]
-    feed_targets: list[str] = Field(default_factory=lambda: ["graph", "vector"])
-    warnings: list[str] = Field(default_factory=list)
-
-
-class SupportedFormatsResponse(BaseModel):
-    allowed_extensions: list[str]
-    blocked_image_extensions: list[str]
 
 
 @router.get("", response_model=SupportedFormatsResponse)

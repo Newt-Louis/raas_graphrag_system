@@ -66,6 +66,10 @@ class AIAPIKeyResponse(BaseModel):
     updated_at: datetime
 
 
+class AIAPIKeyStatusUpdate(BaseModel):
+    status: str = Field(pattern="^(active|disabled|locked|cooldown)$")
+
+
 class AIModelCatalogCreate(BaseModel):
     provider_id: UUID
     capability: str = Field(min_length=1, max_length=30)

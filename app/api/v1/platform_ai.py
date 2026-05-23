@@ -11,6 +11,7 @@ from app.db.session import get_db
 from app.schemas.ai_gateway import (
     AIAPIKeyCreate,
     AIAPIKeyResponse,
+    AIAPIKeyStatusUpdate,
     AIModelCatalogCreate,
     AIModelCatalogResponse,
     AIProviderCreate,
@@ -69,6 +70,24 @@ def create_api_key(
     return _run_service(lambda: service.create_api_key(payload))
 
 
+@router.patch("/api-keys/{api_key_id}/status", response_model=AIAPIKeyResponse)
+def update_api_key_status(
+    api_key_id: UUID,
+    payload: AIAPIKeyStatusUpdate,
+    service: AIAdminService = Depends(get_ai_admin_service),
+):
+    return _run_service(lambda: service.update_api_key_status(api_key_id, payload))
+
+
+@router.delete("/api-keys/{api_key_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_api_key(
+    api_key_id: UUID,
+    service: AIAdminService = Depends(get_ai_admin_service),
+):
+    _run_service(lambda: service.delete_api_key(api_key_id))
+    return None
+
+
 @router.get("/model-catalog", response_model=list[AIModelCatalogResponse])
 def list_model_catalog(service: AIAdminService = Depends(get_ai_admin_service)):
     return _run_service(service.list_models)
@@ -115,6 +134,15 @@ def update_llm_model_profile(
     service: AIAdminService = Depends(get_ai_admin_service),
 ):
     return _run_service(lambda: service.update_llm_profile(profile_id, payload))
+
+
+@router.delete("/llm/model-profiles/{profile_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_llm_model_profile(
+    profile_id: UUID,
+    service: AIAdminService = Depends(get_ai_admin_service),
+):
+    _run_service(lambda: service.delete_llm_profile(profile_id))
+    return None
 
 
 @router.get("/embedding/rotation-pools", response_model=list[EmbeddingRotationPoolResponse])
