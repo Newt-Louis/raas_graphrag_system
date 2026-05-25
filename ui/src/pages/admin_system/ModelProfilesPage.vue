@@ -89,7 +89,9 @@ interface LLMModelProfileResponse {
 }
 
 interface AIProviderResponse {
-  id: string
+  id: string,
+  code: string,
+  display_name: string,
 }
 
 interface EditableColumn {
@@ -222,7 +224,7 @@ async function loadModelProfiles() {
     ])
 
     if (providerResponse.data.length) {
-      providerOptions.value = providerResponse.data.map((provider) => provider.code)
+      providerOptions.value = providerResponse.data.map((provider) => provider.display_name)
       const firstProviderId = providerOptions.value[0]
       if (firstProviderId && !providerOptions.value.includes(form.provider_id)) {
         form.provider_id = firstProviderId
