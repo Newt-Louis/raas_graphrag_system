@@ -83,10 +83,13 @@ class AIAdminRepository:
         return model
 
     def list_llm_pools(self) -> Sequence[LLMRotationPool]:
-        return self.db.scalars(select(LLMRotationPool).order_by(LLMRotationPool.name)).all()
+        return self.db.scalars(select(LLMRotationPool).order_by(LLMRotationPool.rotation_order, LLMRotationPool.name)).all()
 
     def get_llm_pool(self, pool_id: UUID) -> LLMRotationPool | None:
         return self.db.get(LLMRotationPool, pool_id)
+
+    def get_llm_pool_by_profile(self, profile_id: UUID) -> LLMRotationPool | None:
+        return self.db.scalars(select(LLMRotationPool).where(LLMRotationPool.profile_id == profile_id)).first()
 
     def create_llm_pool(self, values: dict) -> LLMRotationPool:
         pool = LLMRotationPool(**values)
@@ -95,11 +98,12 @@ class AIAdminRepository:
         self.db.refresh(pool)
         return pool
 
-    def list_llm_profiles(self) -> Sequence[LLMModelProfile]:
+    def list_llm_profiles(self) -> Sequence[LLMRotationPool]:
         return self.db.scalars(
-            select(LLMModelProfile).order_by(
-                LLMModelProfile.pool_id,
-                LLMModelProfile.rotation_order,
+            select(LLMRotationPool)
+            .join(LLMRotationPool.profile)
+            .order_by(
+                LLMRotationPool.rotation_order,
                 LLMModelProfile.profile_name,
             )
         ).all()
@@ -121,15 +125,27 @@ class AIAdminRepository:
         self.db.refresh(profile)
         return profile
 
+    def update_llm_pool(self, pool: LLMRotationPool, values: dict) -> LLMRotationPool:
+        for key, value in values.items():
+            setattr(pool, key, value)
+        self.db.flush()
+        self.db.refresh(pool)
+        return pool
+
     def delete_llm_profile(self, profile: LLMModelProfile) -> None:
         self.db.delete(profile)
         self.db.flush()
 
     def list_embedding_pools(self) -> Sequence[EmbeddingRotationPool]:
-        return self.db.scalars(select(EmbeddingRotationPool).order_by(EmbeddingRotationPool.name)).all()
+        return self.db.scalars(
+            select(EmbeddingRotationPool).order_by(EmbeddingRotationPool.rotation_order, EmbeddingRotationPool.name)
+        ).all()
 
     def get_embedding_pool(self, pool_id: UUID) -> EmbeddingRotationPool | None:
         return self.db.get(EmbeddingRotationPool, pool_id)
+
+    def get_embedding_pool_by_profile(self, profile_id: UUID) -> EmbeddingRotationPool | None:
+        return self.db.scalars(select(EmbeddingRotationPool).where(EmbeddingRotationPool.profile_id == profile_id)).first()
 
     def create_embedding_pool(self, values: dict) -> EmbeddingRotationPool:
         pool = EmbeddingRotationPool(**values)
@@ -138,11 +154,12 @@ class AIAdminRepository:
         self.db.refresh(pool)
         return pool
 
-    def list_embedding_profiles(self) -> Sequence[EmbeddingModelProfile]:
+    def list_embedding_profiles(self) -> Sequence[EmbeddingRotationPool]:
         return self.db.scalars(
-            select(EmbeddingModelProfile).order_by(
-                EmbeddingModelProfile.pool_id,
-                EmbeddingModelProfile.rotation_order,
+            select(EmbeddingRotationPool)
+            .join(EmbeddingRotationPool.profile)
+            .order_by(
+                EmbeddingRotationPool.rotation_order,
                 EmbeddingModelProfile.profile_name,
             )
         ).all()
@@ -167,3 +184,14 @@ class AIAdminRepository:
         self.db.flush()
         self.db.refresh(profile)
         return profile
+
+    def update_embedding_pool(
+        self,
+        pool: EmbeddingRotationPool,
+        values: dict,
+    ) -> EmbeddingRotationPool:
+        for key, value in values.items():
+            setattr(pool, key, value)
+        self.db.flush()
+        self.db.refresh(pool)
+        return pool

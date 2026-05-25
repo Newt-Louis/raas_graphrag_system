@@ -24,15 +24,23 @@ class DatabaseModelTests(unittest.TestCase):
     def test_llm_and_embedding_rotation_state_is_separated(self) -> None:
         llm_columns = set(Base.metadata.tables["llm_model_profiles"].columns.keys())
         embedding_columns = set(Base.metadata.tables["embedding_model_profiles"].columns.keys())
+        llm_pool_columns = set(Base.metadata.tables["llm_rotation_pools"].columns.keys())
+        embedding_pool_columns = set(Base.metadata.tables["embedding_rotation_pools"].columns.keys())
 
         self.assertIn("max_output_tokens", llm_columns)
         self.assertIn("top_p", llm_columns)
         self.assertIn("embedding_dimensions", embedding_columns)
         self.assertIn("batch_size", embedding_columns)
-        self.assertIn("today_quota_exhausted", llm_columns)
-        self.assertIn("today_quota_exhausted", embedding_columns)
-        self.assertIn("rate_limited_until", llm_columns)
-        self.assertIn("rate_limited_until", embedding_columns)
+        self.assertNotIn("today_quota_exhausted", llm_columns)
+        self.assertNotIn("today_quota_exhausted", embedding_columns)
+        self.assertIn("profile_id", llm_pool_columns)
+        self.assertIn("profile_id", embedding_pool_columns)
+        self.assertIn("current_position", llm_pool_columns)
+        self.assertIn("current_position", embedding_pool_columns)
+        self.assertIn("today_quota_exhausted", llm_pool_columns)
+        self.assertIn("today_quota_exhausted", embedding_pool_columns)
+        self.assertIn("rate_limited_until", llm_pool_columns)
+        self.assertIn("rate_limited_until", embedding_pool_columns)
 
 
 if __name__ == "__main__":

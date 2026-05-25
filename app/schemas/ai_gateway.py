@@ -109,10 +109,18 @@ class AIModelCatalogResponse(AIModelCatalogCreate):
 class LLMRotationPoolCreate(BaseModel):
     tenant_id: UUID | None = None
     app_id: UUID | None = None
+    profile_id: UUID
     name: str = Field(default="default", min_length=1, max_length=120)
     is_default: bool = False
     is_enabled: bool = True
     current_position: int = Field(default=0, ge=0)
+    rotation_order: int = Field(default=0, ge=0)
+    weight: int = Field(default=1, ge=1)
+    is_locked: bool = False
+    lock_reason: str | None = None
+    today_quota_exhausted: bool = False
+    daily_request_count: int = Field(default=0, ge=0)
+    minute_request_count: int = Field(default=0, ge=0)
     description: str | None = None
 
 
@@ -125,7 +133,7 @@ class LLMRotationPoolResponse(LLMRotationPoolCreate):
 
 
 class LLMModelProfileBase(BaseModel):
-    pool_id: UUID
+    pool_id: UUID | None = None
     provider_id: UUID
     api_key_id: UUID
     model_id: UUID | None = None
@@ -193,10 +201,18 @@ class LLMModelProfileResponse(LLMModelProfileBase):
 class EmbeddingRotationPoolCreate(BaseModel):
     tenant_id: UUID | None = None
     app_id: UUID | None = None
+    profile_id: UUID
     name: str = Field(default="default", min_length=1, max_length=120)
     is_default: bool = False
     is_enabled: bool = True
     current_position: int = Field(default=0, ge=0)
+    rotation_order: int = Field(default=0, ge=0)
+    weight: int = Field(default=1, ge=1)
+    is_locked: bool = False
+    lock_reason: str | None = None
+    today_quota_exhausted: bool = False
+    daily_request_count: int = Field(default=0, ge=0)
+    minute_request_count: int = Field(default=0, ge=0)
     description: str | None = None
 
 
@@ -209,7 +225,7 @@ class EmbeddingRotationPoolResponse(EmbeddingRotationPoolCreate):
 
 
 class EmbeddingModelProfileBase(BaseModel):
-    pool_id: UUID
+    pool_id: UUID | None = None
     provider_id: UUID
     api_key_id: UUID
     model_id: UUID | None = None

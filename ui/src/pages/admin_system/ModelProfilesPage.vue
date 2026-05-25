@@ -240,7 +240,7 @@ async function loadModelProfiles() {
 }
 
 async function addModelProfile() {
-  if (!form.pool_id.trim() || !form.provider_id.trim() || !form.api_key_id.trim() || !form.profile_name.trim() || !form.model_name.trim()) {
+  if (!form.provider_id.trim() || !form.api_key_id.trim() || !form.profile_name.trim() || !form.model_name.trim()) {
     return
   }
 
@@ -545,7 +545,7 @@ function fromApiProfile(profile: LLMModelProfileResponse): ApiModelProfile {
 
 function toApiPayload(row: Omit<ApiModelProfile, 'id'> | ApiModelProfile) {
   return {
-    pool_id: row.pool_id,
+    pool_id: row.pool_id || null,
     provider_id: row.provider_id,
     api_key_id: row.api_key_id,
     model_id: row.model_id || null,

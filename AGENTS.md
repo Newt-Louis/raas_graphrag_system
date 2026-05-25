@@ -187,6 +187,18 @@ Platform Admin UI/API là nơi vận hành nội bộ của GraphRAG-as-a-Servic
 
 Customer Admin UI không được quản lý provider key nội bộ của platform. Customer Admin chỉ quản lý tài liệu, ingestion status, và widget/chat config trong tenant/app của họ.
 
+Hiện trạng Platform Admin AI UI:
+
+- `ui/src/views/PlatformAdminView.vue` chỉ là container/layout cho màn hình quản trị AI nội bộ; các page con nằm trong `ui/src/pages/admin_system/`.
+- `ui/src/pages/admin_system/ProvidersPage.vue` quản lý bảng `ai_providers` và gọi API thật dưới `/api/v1/platform/ai/providers`.
+- `ui/src/pages/admin_system/ModelProfilesPage.vue` là trang quản lý LLM model profile hiện tại; không dựng form riêng để admin tự tạo pool runtime thủ công trên UI nếu chưa có thiết kế rõ.
+- Raw provider API key phải lưu qua bảng `ai_api_keys` bằng backend API, backend hash key vào `key_hash`, encrypt key vào `encrypted_api_key`, và frontend chỉ được nhận preview đã mask.
+- Không nhập raw API key vào `llm_model_profiles.api_key_id`. Cột `api_key_id` trong `llm_model_profiles` là khóa ngoại tới `ai_api_keys.id`; `provider_id` là khóa ngoại tới `ai_providers.id`.
+- Từ migration `202605250001`, model profile và pool runtime đã tách lớp nhưng không thêm bảng entry: `llm_model_profiles`/`embedding_model_profiles` chỉ giữ cấu hình masterdata của model/key/provider; `llm_rotation_pools`/`embedding_rotation_pools` là bảng runtime trực tiếp, mỗi dòng pool trỏ tới một profile qua `profile_id` và giữ `rotation_order`, `weight`, `current_position`, `is_enabled`, `is_locked`, `lock_reason`, `today_quota_exhausted`, `quota_exhausted_until`, `rate_limited_until`, `last_used_at`, `daily_request_count`, `minute_request_count`, `success_count`, `failure_count`.
+- `current_position` trong bảng pool là marker 0/1 cho biết dòng runtime nào đang tới lượt gọi tiếp theo; vòng xoay đi theo `rotation_order`.
+- Redis runtime sau này hydrate từ các bảng `*_rotation_pools` join sang `*_model_profiles`. Khi cooldown/quota hết hạn hoặc Redis bị flush/restart, worker/lifespan/service cần rehydrate hoặc reconcile Redis từ PostgreSQL theo bảng pool runtime.
+- `status` trên danh sách model profile/API key/provider chỉ là trạng thái vận hành để hiển thị active/disabled/locked/cooldown; thao tác đổi trạng thái phải đi qua nút action và endpoint backend, không biến status thành ô chọn tự do trong bảng.
+
 ## Backend Quy Ước
 
 - Framework hiện tại: FastAPI + Pydantic Settings + SQLAlchemy.

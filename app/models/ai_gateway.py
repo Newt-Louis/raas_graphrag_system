@@ -102,40 +102,23 @@ class AIModelCatalog(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 class LLMRotationPool(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "llm_rotation_pools"
     __table_args__ = (
-        UniqueConstraint("tenant_id", "app_id", "name", name="uq_llm_rotation_pools_scope_name"),
+        UniqueConstraint("profile_id", name="uq_llm_rotation_pools_profile"),
         Index("ix_llm_rotation_pools_scope_default", "tenant_id", "app_id", "is_default"),
+        Index("ix_llm_rotation_pools_order", "rotation_order"),
+        Index("ix_llm_rotation_pools_current", "current_position"),
+        Index("ix_llm_rotation_pools_enabled_locked", "is_enabled", "is_locked"),
+        Index("ix_llm_rotation_pools_quota_cooldown", "today_quota_exhausted", "rate_limited_until"),
     )
 
     tenant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"))
     app_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("customer_apps.id", ondelete="CASCADE"))
+    profile_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("llm_model_profiles.id", ondelete="CASCADE"), nullable=False)
     name: Mapped[str] = mapped_column(String(120), nullable=False, default="default")
     is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     current_position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    description: Mapped[str | None] = mapped_column(Text)
-
-    profiles: Mapped[list["LLMModelProfile"]] = relationship(back_populates="pool")
-
-
-class LLMModelProfile(UUIDPrimaryKeyMixin, TimestampMixin, Base):
-    __tablename__ = "llm_model_profiles"
-    __table_args__ = (
-        UniqueConstraint("pool_id", "rotation_order", name="uq_llm_model_profiles_pool_order"),
-        Index("ix_llm_model_profiles_pool_enabled", "pool_id", "is_enabled", "is_locked"),
-        Index("ix_llm_model_profiles_quota_cooldown", "today_quota_exhausted", "rate_limited_until"),
-    )
-
-    pool_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("llm_rotation_pools.id", ondelete="CASCADE"), nullable=False)
-    provider_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("ai_providers.id", ondelete="RESTRICT"), nullable=False)
-    api_key_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("ai_api_keys.id", ondelete="RESTRICT"), nullable=False)
-    model_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("ai_model_catalog.id", ondelete="SET NULL"))
-    profile_name: Mapped[str] = mapped_column(String(255), nullable=False)
-    model_name: Mapped[str] = mapped_column(String(255), nullable=False)
-    api_base: Mapped[str | None] = mapped_column(Text)
-    endpoint_id: Mapped[str | None] = mapped_column(String(120))
     rotation_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     weight: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
-    is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     is_locked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     lock_reason: Mapped[str | None] = mapped_column(Text)
     today_quota_exhausted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
@@ -146,6 +129,21 @@ class LLMModelProfile(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     minute_request_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     success_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     failure_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    description: Mapped[str | None] = mapped_column(Text)
+
+    profile: Mapped["LLMModelProfile"] = relationship(back_populates="pool_state")
+
+
+class LLMModelProfile(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "llm_model_profiles"
+
+    provider_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("ai_providers.id", ondelete="RESTRICT"), nullable=False)
+    api_key_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("ai_api_keys.id", ondelete="RESTRICT"), nullable=False)
+    model_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("ai_model_catalog.id", ondelete="SET NULL"))
+    profile_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    model_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    api_base: Mapped[str | None] = mapped_column(Text)
+    endpoint_id: Mapped[str | None] = mapped_column(String(120))
     temperature: Mapped[float | None] = mapped_column(Float)
     top_p: Mapped[float | None] = mapped_column(Float)
     top_k: Mapped[int | None] = mapped_column(Integer)
@@ -155,46 +153,33 @@ class LLMModelProfile(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     cost_per_1k_output_tokens: Mapped[Decimal | None] = mapped_column(Numeric(12, 8))
     extra_parameters: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
 
-    pool: Mapped[LLMRotationPool] = relationship(back_populates="profiles")
+    pool_state: Mapped["LLMRotationPool | None"] = relationship(
+        back_populates="profile",
+        cascade="all, delete-orphan",
+        single_parent=True,
+    )
 
 
 class EmbeddingRotationPool(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "embedding_rotation_pools"
     __table_args__ = (
-        UniqueConstraint("tenant_id", "app_id", "name", name="uq_embedding_rotation_pools_scope_name"),
+        UniqueConstraint("profile_id", name="uq_embedding_rotation_pools_profile"),
         Index("ix_embedding_rotation_pools_scope_default", "tenant_id", "app_id", "is_default"),
+        Index("ix_embedding_rotation_pools_order", "rotation_order"),
+        Index("ix_embedding_rotation_pools_current", "current_position"),
+        Index("ix_embedding_rotation_pools_enabled_locked", "is_enabled", "is_locked"),
+        Index("ix_embedding_rotation_pools_quota_cooldown", "today_quota_exhausted", "rate_limited_until"),
     )
 
     tenant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"))
     app_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("customer_apps.id", ondelete="CASCADE"))
+    profile_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("embedding_model_profiles.id", ondelete="CASCADE"), nullable=False)
     name: Mapped[str] = mapped_column(String(120), nullable=False, default="default")
     is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     current_position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    description: Mapped[str | None] = mapped_column(Text)
-
-    profiles: Mapped[list["EmbeddingModelProfile"]] = relationship(back_populates="pool")
-
-
-class EmbeddingModelProfile(UUIDPrimaryKeyMixin, TimestampMixin, Base):
-    __tablename__ = "embedding_model_profiles"
-    __table_args__ = (
-        UniqueConstraint("pool_id", "rotation_order", name="uq_embedding_model_profiles_pool_order"),
-        Index("ix_embedding_model_profiles_pool_enabled", "pool_id", "is_enabled", "is_locked"),
-        Index("ix_embedding_model_profiles_quota_cooldown", "today_quota_exhausted", "rate_limited_until"),
-    )
-
-    pool_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("embedding_rotation_pools.id", ondelete="CASCADE"), nullable=False)
-    provider_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("ai_providers.id", ondelete="RESTRICT"), nullable=False)
-    api_key_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("ai_api_keys.id", ondelete="RESTRICT"), nullable=False)
-    model_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("ai_model_catalog.id", ondelete="SET NULL"))
-    profile_name: Mapped[str] = mapped_column(String(255), nullable=False)
-    model_name: Mapped[str] = mapped_column(String(255), nullable=False)
-    api_base: Mapped[str | None] = mapped_column(Text)
-    endpoint_id: Mapped[str | None] = mapped_column(String(120))
     rotation_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     weight: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
-    is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     is_locked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     lock_reason: Mapped[str | None] = mapped_column(Text)
     today_quota_exhausted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
@@ -205,6 +190,21 @@ class EmbeddingModelProfile(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     minute_request_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     success_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     failure_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    description: Mapped[str | None] = mapped_column(Text)
+
+    profile: Mapped["EmbeddingModelProfile"] = relationship(back_populates="pool_state")
+
+
+class EmbeddingModelProfile(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "embedding_model_profiles"
+
+    provider_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("ai_providers.id", ondelete="RESTRICT"), nullable=False)
+    api_key_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("ai_api_keys.id", ondelete="RESTRICT"), nullable=False)
+    model_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("ai_model_catalog.id", ondelete="SET NULL"))
+    profile_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    model_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    api_base: Mapped[str | None] = mapped_column(Text)
+    endpoint_id: Mapped[str | None] = mapped_column(String(120))
     embedding_dimensions: Mapped[int | None] = mapped_column(Integer)
     batch_size: Mapped[int | None] = mapped_column(Integer)
     retrieval_top_k: Mapped[int | None] = mapped_column(Integer)
@@ -212,7 +212,11 @@ class EmbeddingModelProfile(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     cost_per_1k_tokens: Mapped[Decimal | None] = mapped_column(Numeric(12, 8))
     extra_parameters: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
 
-    pool: Mapped[EmbeddingRotationPool] = relationship(back_populates="profiles")
+    pool_state: Mapped["EmbeddingRotationPool | None"] = relationship(
+        back_populates="profile",
+        cascade="all, delete-orphan",
+        single_parent=True,
+    )
 
 
 class AIUsageEvent(UUIDPrimaryKeyMixin, TimestampMixin, Base):
