@@ -222,7 +222,7 @@ async function loadModelProfiles() {
     ])
 
     if (providerResponse.data.length) {
-      providerOptions.value = providerResponse.data.map((provider) => provider.id)
+      providerOptions.value = providerResponse.data.map((provider) => provider.code)
       const firstProviderId = providerOptions.value[0]
       if (firstProviderId && !providerOptions.value.includes(form.provider_id)) {
         form.provider_id = firstProviderId
