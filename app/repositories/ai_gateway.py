@@ -195,3 +195,7 @@ class AIAdminRepository:
         self.db.flush()
         self.db.refresh(pool)
         return pool
+
+    def delete_embedding_profile(self, profile: EmbeddingModelProfile) -> None:
+        self.db.delete(profile)
+        self.db.flush()

@@ -343,13 +343,27 @@ class AIAdminService:
         )
         return self._embedding_profile_response(updated_pool)
 
+    def delete_embedding_profile(self, profile_id: UUID) -> None:
+        profile = self.repository.get_embedding_profile(profile_id)
+        if profile is None:
+            raise AIAdminNotFoundError("Embedding model profile not found.")
+
+        self._commit_or_conflict(
+            lambda: self.repository.delete_embedding_profile(profile),
+            "Embedding model profile could not be deleted.",
+        )
+
     def _validate_llm_profile_refs(
         self,
         *,
-        provider_id: UUID,
-        api_key_id: UUID,
+        provider_id: UUID | None,
+        api_key_id: UUID | None,
         model_id: UUID | None,
     ) -> None:
+        if provider_id is None:
+            raise AIAdminValidationError("provider_id is required.")
+        if api_key_id is None:
+            raise AIAdminValidationError("api_key_id is required.")
         self._require_provider(provider_id)
         api_key = self.db.get(AIAPIKey, api_key_id)
         if api_key is None:
@@ -368,10 +382,14 @@ class AIAdminService:
     def _validate_embedding_profile_refs(
         self,
         *,
-        provider_id: UUID,
-        api_key_id: UUID,
+        provider_id: UUID | None,
+        api_key_id: UUID | None,
         model_id: UUID | None,
     ) -> None:
+        if provider_id is None:
+            raise AIAdminValidationError("provider_id is required.")
+        if api_key_id is None:
+            raise AIAdminValidationError("api_key_id is required.")
         self._require_provider(provider_id)
         api_key = self.db.get(AIAPIKey, api_key_id)
         if api_key is None:

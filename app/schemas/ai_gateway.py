@@ -134,8 +134,8 @@ class LLMRotationPoolResponse(LLMRotationPoolCreate):
 
 class LLMModelProfileBase(BaseModel):
     pool_id: UUID | None = None
-    provider_id: UUID
-    api_key_id: UUID
+    provider_id: UUID | None = None
+    api_key_id: UUID | None = None
     model_id: UUID | None = None
     profile_name: str = Field(min_length=1, max_length=255)
     model_name: str = Field(min_length=1, max_length=255)
@@ -226,8 +226,8 @@ class EmbeddingRotationPoolResponse(EmbeddingRotationPoolCreate):
 
 class EmbeddingModelProfileBase(BaseModel):
     pool_id: UUID | None = None
-    provider_id: UUID
-    api_key_id: UUID
+    provider_id: UUID | None = None
+    api_key_id: UUID | None = None
     model_id: UUID | None = None
     profile_name: str = Field(min_length=1, max_length=255)
     model_name: str = Field(min_length=1, max_length=255)

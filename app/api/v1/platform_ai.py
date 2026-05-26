@@ -207,6 +207,15 @@ def update_embedding_model_profile(
     return _run_service(lambda: service.update_embedding_profile(profile_id, payload))
 
 
+@router.delete("/embedding/model-profiles/{profile_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_embedding_model_profile(
+    profile_id: UUID,
+    service: AIAdminService = Depends(get_ai_admin_service),
+):
+    _run_service(lambda: service.delete_embedding_profile(profile_id))
+    return None
+
+
 def _run_service(factory: Callable[[], T]) -> T:
     try:
         return factory()
