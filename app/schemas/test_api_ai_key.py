@@ -18,3 +18,22 @@ class TestAPIAIKeyResponse(BaseModel):
     response_text: str = ""
     usage: dict[str, Any] = Field(default_factory=dict)
     error: str = ""
+
+
+class TestLLMModelProfileRequest(BaseModel):
+    message: str = Field(min_length=1)
+    temperature: float | None = Field(default=None, ge=0, le=2)
+    max_tokens: int | None = Field(default=None, ge=1, le=8192)
+
+
+class TestLLMModelProfileResponse(BaseModel):
+    success: bool
+    profile_id: str
+    profile_name: str
+    provider_id: str
+    provider_code: str
+    api_key_id: str
+    model_name: str
+    response_text: str = ""
+    usage: dict[str, Any] = Field(default_factory=dict)
+    error: str = ""

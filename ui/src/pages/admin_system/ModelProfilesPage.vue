@@ -496,10 +496,11 @@ async function deleteModelProfile(row: ApiModelProfile) {
 function openModelProfileTest(row: ApiModelProfile) {
   void router.push({
     name: 'api-ai-key-test',
-    params: { apiKeyId: row.api_key_id },
+    params: { profileId: row.id },
     query: {
       name: row.profile_name,
       model: row.model_name,
+      apiKeyId: row.api_key_id,
     },
   })
 }
@@ -789,6 +790,7 @@ function messageFromError(error: unknown) {
                 <Button
                   label="Test"
                   size="small"
+                  severity="info"
                   @click="openModelProfileTest(data)"
                 />
               </div>

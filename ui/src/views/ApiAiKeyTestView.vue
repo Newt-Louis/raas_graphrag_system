@@ -12,6 +12,11 @@ interface ChatMessage {
 
 interface TestResponse {
   success: boolean
+  profile_id: string
+  profile_name: string
+  provider_id: string
+  provider_code: string
+  api_key_id: string
   model_name: string
   response_text: string
   usage: Record<string, unknown>
@@ -20,20 +25,22 @@ interface TestResponse {
 
 const route = useRoute()
 const router = useRouter()
-const apiKeyId = computed(() => String(route.params.apiKeyId || ''))
-const apiKeyName = computed(() => String(route.query.name || 'API key'))
+const profileId = computed(() => String(route.params.profileId || ''))
+const profileName = ref(String(route.query.name || 'Model profile'))
+const modelName = ref(String(route.query.model || ''))
+const apiKeyId = ref(String(route.query.apiKeyId || ''))
+const providerCode = ref('')
 const messages = ref<ChatMessage[]>([])
 const loading = ref(false)
 const errorMessage = ref('')
 
 const form = reactive({
-  model_name: String(route.query.model || ''),
   message: '',
 })
 
 async function sendMessage() {
   const text = form.message.trim()
-  if (!text || !form.model_name.trim() || loading.value) return
+  if (!text || !profileId.value || loading.value) return
 
   messages.value.push({ role: 'user', content: text })
   form.message = ''
@@ -41,11 +48,10 @@ async function sendMessage() {
   errorMessage.value = ''
 
   try {
-    const response = await fetch(`/api/v1/test-api-ai-key/${apiKeyId.value}`, {
+    const response = await fetch(`/api/v1/test-api-ai-key/llm/model-profiles/${profileId.value}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model_name: form.model_name.trim(),
         message: text,
       }),
     })
@@ -57,6 +63,10 @@ async function sendMessage() {
     }
 
     const result = payload as TestResponse
+    profileName.value = result.profile_name
+    modelName.value = result.model_name
+    apiKeyId.value = result.api_key_id
+    providerCode.value = result.provider_code
     messages.value.push({
       role: 'assistant',
       content: result.success ? result.response_text : result.error,
@@ -80,20 +90,34 @@ function goBack() {
   <section class="test-page">
     <header class="page-header">
       <div>
-        <h1>Test AI API key</h1>
-        <p>{{ apiKeyName }}</p>
+        <h1>Test model profile</h1>
+        <p>{{ profileName }}</p>
       </div>
       <Button label="Back" severity="secondary" icon="pi pi-arrow-left" @click="goBack" />
     </header>
 
     <section class="panel test-layout">
-      <label class="model-field">
-        <span>Model name</span>
-        <InputText v-model="form.model_name" placeholder="openai/gpt-4o-mini" />
-      </label>
+      <div class="profile-summary">
+        <div>
+          <span>model_name</span>
+          <strong>{{ modelName || 'Loaded from PostgreSQL on first test' }}</strong>
+        </div>
+        <div>
+          <span>profile_id</span>
+          <strong>{{ profileId }}</strong>
+        </div>
+        <div>
+          <span>api_key_id</span>
+          <strong>{{ apiKeyId || 'Loaded from profile' }}</strong>
+        </div>
+        <div>
+          <span>provider</span>
+          <strong>{{ providerCode || 'Loaded from profile' }}</strong>
+        </div>
+      </div>
 
       <div class="chat-window" aria-live="polite">
-        <p v-if="!messages.length" class="empty-state">Send a message to verify this key and model.</p>
+        <p v-if="!messages.length" class="empty-state">Send a message to verify this profile with LiteLLM.</p>
         <div
           v-for="(message, index) in messages"
           :key="index"
@@ -130,16 +154,33 @@ function goBack() {
   gap: 14px;
 }
 
-.model-field {
+.profile-summary {
   display: grid;
-  gap: 6px;
-  color: var(--text-color);
-  font-weight: 650;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
 }
 
-.model-field span {
+.profile-summary div {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--border-radius);
+  background: var(--surface-muted);
+  padding: 10px 12px;
+}
+
+.profile-summary span {
   color: var(--muted-text);
   font-size: 12px;
+}
+
+.profile-summary strong {
+  overflow: hidden;
+  color: var(--text-color);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .chat-window {
@@ -236,6 +277,10 @@ function goBack() {
 }
 
 @media (max-width: 760px) {
+  .profile-summary {
+    grid-template-columns: 1fr;
+  }
+
   .chat-input {
     grid-template-columns: 1fr;
   }
