@@ -674,7 +674,7 @@ function messageFromError(error: unknown) {
             <InputNumber v-model="form.timeout_seconds" :min="1" input-class="full-input" />
           </label>
 
-          <label class="span-1">
+          <label class="span-2">
             <span>minute_request_count</span>
             <InputNumber v-model="form.minute_request_count" :min="0" input-class="full-input" />
           </label>

@@ -44,6 +44,7 @@ Repo hiện tại đã tách rõ hơn thành các lõi nền tảng:
 - GraphRAG:
   - Thư mục: `app/graphrag/`.
   - `GraphRAGAIClient` đã tồn tại để GraphRAG gọi embedding/LLM qua AI Gateway.
+  - `app/graphrag/vector_database/` chứa pipeline vector database bước đầu: nhận chunk/query ở dạng placeholder/service input, gọi embedding qua `GraphRAGAIClient`/AI Gateway embedding rotator, lưu vector đã tính sẵn vào LanceDB, và query LanceDB để trả match + cosine similarity. Module này chưa phải HTTP route và chưa gọi LLM synthesis.
   - `engine.py`, `ingestion_pipeline.py`, và `query_pipeline.py` hiện vẫn là placeholder rỗng; chưa được coi là implementation GraphRAG hoàn chỉnh.
 - Services:
   - `app/services/ingestion/`: document parsing/chunking/deduplication/fanout records.
@@ -171,6 +172,8 @@ Hiện tại retrieval service đang vector-only:
 - `app/services/vector/embeddings.py` có `HashingTextEmbeddingService` để dev/test không cần secret. Đây không phải embedding production.
 - `app/services/vector/store.py` có `LanceDBVectorStore` và `InMemoryVectorStore`.
 - `app/services/retrieval/orchestrator.py` là điểm hứng retrieval trước khi synthesis. Chat API nên gọi orchestrator/service, không gọi thẳng LanceDB.
+- `app/graphrag/vector_database/` là luồng GraphRAG-facing mới cho LanceDB với provider embedding thật: `GraphRAGVectorDatabasePipeline.ingest()` gọi AI Gateway embedding rotator để embed document chunks rồi lưu vào LanceDB; `query()` embed query rồi tìm trong LanceDB và trả `VectorMatch` gồm `similarity`, `distance`, `document_id`, `chunk_id`, text và metadata. Luồng này dùng `settings.LANCEDB_PATH` và `settings.VECTOR_INDEX_TABLE` qua factory, không tự chọn provider/key và không gọi LLM.
+- Route `POST /api/v1/ingest` hiện parse/chunk tài liệu rồi gọi `app/graphrag/vector_database/` để embed qua embedding rotation pool hydrate từ PostgreSQL trước khi lưu LanceDB; không còn dùng hashing local cho đường ingest route chính. Route `POST /api/v1/ingest/query` embed query qua cùng embedding gateway rồi search LanceDB để trả cosine similarity, chưa gọi LLM synthesis.
 - Khi chuyển sang embedding provider thật, ingest embedding và query embedding phải dùng cùng embedding profile hoặc profile tương thích dimension với index.
 - Khi thêm GraphDB/Kuzu retrieval, mở rộng orchestrator để hợp nhất kết quả vector + graph, rerank, và trả citation/source metadata. Không bẻ chat API sang gọi trực tiếp hai DB.
 
