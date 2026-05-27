@@ -28,18 +28,15 @@ ALLOWED_DOCUMENT_EXTENSIONS = {
     ".pptx",
     ".ppt",
     ".txt",
-    ".md",
-    ".html",
-    ".htm",
     ".csv",
     ".json",
     ".jsonl",
-}
-
-BLOCKED_IMAGE_EXTENSIONS = {
     ".jpg",
     ".jpeg",
     ".png",
+}
+
+BLOCKED_IMAGE_EXTENSIONS = {
     ".webp",
     ".gif",
     ".bmp",
@@ -73,10 +70,10 @@ class ParserUnavailableError(RuntimeError):
 
 def validate_document_file(filename: str, content_type: str | None = None) -> str:
     extension = Path(filename).suffix.lower()
-    if extension in BLOCKED_IMAGE_EXTENSIONS or (
-        content_type and content_type.lower().startswith(BLOCKED_IMAGE_CONTENT_PREFIX)
-    ):
-        raise DocumentValidationError("Image uploads are not accepted as source documents.")
+    if extension in BLOCKED_IMAGE_EXTENSIONS:
+        raise DocumentValidationError("Unsupported image extension. Allowed direct image uploads: .jpg, .jpeg, .png")
+    if content_type and content_type.lower().startswith(BLOCKED_IMAGE_CONTENT_PREFIX) and extension not in ALLOWED_DOCUMENT_EXTENSIONS:
+        raise DocumentValidationError("Unsupported image extension. Allowed direct image uploads: .jpg, .jpeg, .png")
     if extension not in ALLOWED_DOCUMENT_EXTENSIONS:
         allowed = ", ".join(sorted(ALLOWED_DOCUMENT_EXTENSIONS))
         raise DocumentValidationError(f"Unsupported document extension '{extension}'. Allowed: {allowed}")
@@ -495,6 +492,32 @@ class PdfParser(BaseParser):
         return ParsedDocument(scope=scope, source=source, title=path.stem, elements=elements)
 
 
+class ImageParser(BaseParser):
+    def parse(self, path: Path, scope: DocumentScope, source: SourceFile) -> ParsedDocument:
+        element = self._element(
+            source,
+            0,
+            ElementType.IMAGE,
+            image_ref=source.filename,
+            metadata={
+                "direct_upload": True,
+                "content_type": source.content_type,
+                "byte_size": source.byte_size,
+                "stored_path": str(source.stored_path) if source.stored_path else str(path),
+                "vision_extraction_status": "pending",
+            },
+        )
+        return ParsedDocument(
+            scope=scope,
+            source=source,
+            title=path.stem,
+            elements=[element],
+            warnings=[
+                "Direct image upload requires a multimodal embedding profile that accepts image inputs."
+            ],
+        )
+
+
 class UnsupportedLegacyOfficeParser(BaseParser):
     def parse(self, path: Path, scope: DocumentScope, source: SourceFile) -> ParsedDocument:
         raise ParserUnavailableError(
@@ -517,6 +540,9 @@ class DocumentParserRegistry:
             ".pptx": PptxParser(),
             ".xlsx": XlsxParser(),
             ".pdf": PdfParser(),
+            ".jpg": ImageParser(),
+            ".jpeg": ImageParser(),
+            ".png": ImageParser(),
             ".doc": UnsupportedLegacyOfficeParser(),
             ".ppt": UnsupportedLegacyOfficeParser(),
             ".xls": UnsupportedLegacyOfficeParser(),

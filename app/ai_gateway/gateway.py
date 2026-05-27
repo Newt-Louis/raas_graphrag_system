@@ -101,7 +101,7 @@ class AIGateway:
 
     async def embed(
         self,
-        inputs: str | list[str],
+        inputs: Any | list[Any],
         *,
         profile_id: str | None = None,
         context: GatewayRequestContext | None = None,
@@ -113,7 +113,7 @@ class AIGateway:
             return self._failure(AICapability.EMBEDDING, profile_id, "Không có embedding profile khả dụng.")
 
         rotator = self._get_rotator(profile, context, expected_dim=expected_dim)
-        input_count = 1 if isinstance(inputs, str) else len(inputs)
+        input_count = 1 if isinstance(inputs, (str, dict)) else len(inputs)
         if rotator is None:
             result = self._failure(
                 AICapability.EMBEDDING,

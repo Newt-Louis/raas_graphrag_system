@@ -58,13 +58,11 @@ class EmbeddingRotator(BaseRotator):
 
     async def _call(self, key: KeyState, **kwargs) -> Any:
         inputs = kwargs.pop("inputs")
-        if isinstance(inputs, str):
+        if isinstance(inputs, (str, dict)):
             inputs = [inputs]
         inputs = list(inputs or [])
         if not inputs:
-            raise ValueError("EmbeddingRotator.run() cần tham số `inputs` (list[str]).")
-        if not all(isinstance(item, str) for item in inputs):
-            raise ValueError("Embedding inputs phải là list[str].")
+            raise ValueError("EmbeddingRotator.run() cần tham số `inputs`.")
 
         default_batch_size = key.config.extra.get("embedding_batch_size", self.max_batch_size)
         batch_size = int(kwargs.pop("batch_size", default_batch_size or len(inputs)))

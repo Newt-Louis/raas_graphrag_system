@@ -48,6 +48,22 @@ def _element_text(element: StructuralElement) -> str:
     return element.text.strip()
 
 
+def _section_media_metadata(section: list[StructuralElement]) -> dict[str, object]:
+    media = []
+    for element in section:
+        if element.element_type != ElementType.IMAGE:
+            continue
+        media.append(
+            {
+                "type": "image",
+                "element_id": element.element_id,
+                "image_ref": element.image_ref,
+                **element.metadata,
+            }
+        )
+    return {"media": media} if media else {}
+
+
 class DocumentChunker:
     def chunk(self, document: ParsedDocument, config: ChunkingConfig) -> list[DocumentChunk]:
         if config.strategy == ChunkStrategy.SLIDING_WINDOW:
@@ -69,6 +85,7 @@ class DocumentChunker:
             config=config,
             strategy=ChunkStrategy.SLIDING_WINDOW,
             start_index=0,
+            metadata=_section_media_metadata(document.elements),
         )
 
     def _semantic(self, document: ParsedDocument, config: ChunkingConfig) -> list[DocumentChunk]:
@@ -86,7 +103,10 @@ class DocumentChunker:
                     config=config,
                     strategy=ChunkStrategy.SEMANTIC,
                     start_index=len(chunks),
-                    metadata={"section_index": section_index},
+                    metadata={
+                        "section_index": section_index,
+                        **_section_media_metadata(section),
+                    },
                 )
             )
         return chunks
@@ -115,6 +135,7 @@ class DocumentChunker:
                     "chunk_role": "parent",
                     "section_index": section_index,
                     "token_count": _token_count(section_text),
+                    **_section_media_metadata(section),
                 },
             )
             chunks.append(parent)
@@ -140,6 +161,7 @@ class DocumentChunker:
                             "chunk_role": "child",
                             "section_index": section_index,
                             "token_count": _token_count(child_text),
+                            **_section_media_metadata(section),
                         },
                     )
                 )

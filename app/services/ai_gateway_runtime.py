@@ -60,7 +60,7 @@ def build_embedding_gateway(
             KeyConfig(
                 id=str(api_key.id),
                 provider=provider.code,
-                model_name=profile.model_name,
+                model_name=_litellm_model_name(provider, profile.model_name),
                 api_key=decrypt_secret(api_key.encrypted_api_key),
                 capability=AICapability.EMBEDDING.value,
                 api_base=profile.api_base or api_key.api_base or provider.base_url,
@@ -151,6 +151,17 @@ def _provider_override(provider: AIProvider) -> dict:
     provider_config = provider.provider_config or {}
     litellm_provider = provider_config.get("litellm_provider") or provider_config.get("custom_llm_provider")
     return {"custom_llm_provider": str(litellm_provider)} if litellm_provider else {}
+
+
+def _litellm_model_name(provider: AIProvider, model_name: str) -> str:
+    provider_code = str(provider.code or "").strip().strip("/")
+    clean_model_name = str(model_name or "").strip().lstrip("/")
+    if not provider_code or not clean_model_name:
+        return clean_model_name
+    provider_prefix = f"{provider_code}/"
+    if clean_model_name.startswith(provider_prefix):
+        return clean_model_name
+    return f"{provider_prefix}{clean_model_name}"
 
 
 def _record_usage(db: Session, record) -> None:

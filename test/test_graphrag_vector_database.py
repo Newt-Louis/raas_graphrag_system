@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
+from typing import Any
 
 from app.ai_gateway.base_rotator import RotationResult
 from app.graphrag.vector_database import (
@@ -14,7 +17,11 @@ from app.graphrag.vector_database import (
 
 
 class FakeEmbeddingAIClient:
-    async def embed_documents(self, texts: list[str], **kwargs):
+    def __init__(self) -> None:
+        self.document_inputs: list[Any] = []
+
+    async def embed_documents(self, texts: list[Any], **kwargs):
+        self.document_inputs = texts
         return RotationResult(
             success=True,
             data=[self._embed(text) for text in texts],
@@ -34,10 +41,12 @@ class FakeEmbeddingAIClient:
             used_provider="fake-provider",
         )
 
-    def _embed(self, text: str) -> list[float]:
-        normalized = text.lower()
+    def _embed(self, text: Any) -> list[float]:
+        normalized = str(text).lower()
         if "refund" in normalized:
             return [1.0, 0.0, 0.0]
+        if "image_url" in normalized:
+            return [0.5, 0.5, 0.0]
         if "warehouse" in normalized:
             return [0.0, 1.0, 0.0]
         return [0.0, 0.0, 1.0]
@@ -130,6 +139,45 @@ class GraphRAGVectorDatabaseTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual([match.chunk_id for match in query_result.matches], ["refund-a"])
+
+    async def test_image_chunks_are_sent_to_embedding_gateway_as_data_url_payloads(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            image_path = Path(temp_dir) / "photo.png"
+            image_path.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+            ai_client = FakeEmbeddingAIClient()
+            pipeline = GraphRAGVectorDatabasePipeline(
+                ai_client=ai_client,
+                vector_store=InMemoryPrecomputedVectorStore(table_name="test_chunks"),
+            )
+
+            result = await pipeline.ingest(
+                VectorIngestRequest(
+                    scope=VectorDatabaseScope("tenant-a", "support", "images"),
+                    chunks=[
+                        VectorDocumentChunk(
+                            document_id="photo",
+                            chunk_id="photo-image",
+                            text="[Image: photo.png]",
+                            metadata={
+                                "media": [
+                                    {
+                                        "type": "image",
+                                        "stored_path": str(image_path),
+                                        "content_type": "image/png",
+                                    }
+                                ]
+                            },
+                        )
+                    ],
+                )
+            )
+
+        self.assertEqual(result.stored_count, 1)
+        self.assertIsInstance(ai_client.document_inputs[0], list)
+        image_part = ai_client.document_inputs[0][1]
+        self.assertEqual(image_part["type"], "image_url")
+        self.assertTrue(image_part["image_url"]["url"].startswith("data:image/png;base64,"))
 
 
 if __name__ == "__main__":

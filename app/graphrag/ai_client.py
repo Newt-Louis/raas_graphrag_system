@@ -18,7 +18,7 @@ class GraphRAGAIClient:
 
     async def embed_documents(
         self,
-        texts: list[str],
+        texts: list[Any],
         *,
         tenant_id: str,
         app_id: str,

@@ -107,6 +107,12 @@ async def ingest_document(
         embedding_profile_id=embedding_profile_id,
         expected_dim=expected_dim,
     )
+    _persist_graph_records_to_kuzu_placeholder(
+        tenant_id=tenant_id,
+        app_id=app_id,
+        collection_id=collection_id,
+        graph_records=bundle.graph_records,
+    )
 
     source = bundle.parsed_document.source
     return DocumentIngestResponse(
@@ -237,6 +243,27 @@ async def _persist_chunks_to_lancedb(
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     except VectorDatabasePipelineError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+
+
+def _persist_graph_records_to_kuzu_placeholder(
+    *,
+    tenant_id: str,
+    app_id: str,
+    collection_id: str | None,
+    graph_records: list,
+) -> None:
+    # TODO: Persist GraphRAG graph records to Kuzu in the same ingest transaction boundary.
+    # Required work:
+    # 1. Add a Kuzu repository/service under app/repositories or app/services that owns schema
+    #    creation for tenant/app scoped document, element, chunk, entity, and relation nodes.
+    # 2. Map graph_records from DocumentIngestionPipeline into Kuzu nodes/edges without mixing
+    #    tenants, apps, collections, or documents.
+    # 3. Make writes idempotent by document_id/chunk_id/content_hash so retries can upsert safely.
+    # 4. Return graph persistence counts/errors in DocumentIngestResponse and fail clearly when
+    #    vector indexing succeeded but graph persistence did not.
+    # 5. Extend query orchestration to merge LanceDB vector matches with Kuzu graph traversal
+    #    results before rerank/synthesis.
+    _ = (tenant_id, app_id, collection_id, graph_records)
 
 
 def _vector_database_pipeline(

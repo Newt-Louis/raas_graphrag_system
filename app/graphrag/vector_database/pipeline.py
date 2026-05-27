@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any
 
 from app.ai_gateway.base_rotator import RotationResult
@@ -46,7 +48,7 @@ class GraphRAGVectorDatabasePipeline:
             overrides["batch_size"] = request.batch_size
 
         embedding_result = await self.ai_client.embed_documents(
-            [chunk.text for chunk in chunks],
+            [_embedding_input_from_chunk(chunk) for chunk in chunks],
             tenant_id=request.scope.tenant_id,
             app_id=request.scope.app_id,
             collection_id=request.scope.collection_id,
@@ -133,6 +135,60 @@ def _vectors_from_result(result: RotationResult, *, expected_count: int) -> list
 
 def _is_vector(value: Any) -> bool:
     return isinstance(value, list) and all(isinstance(item, (int, float)) for item in value)
+
+
+def _embedding_input_from_chunk(chunk: VectorDocumentChunk) -> Any:
+    image_input = _image_embedding_input(chunk)
+    if image_input is not None:
+        return image_input
+    return chunk.text
+
+
+def _image_embedding_input(chunk: VectorDocumentChunk) -> list[dict[str, Any]] | None:
+    media_items = chunk.metadata.get("media")
+    if not isinstance(media_items, list):
+        return None
+
+    for media in media_items:
+        if not isinstance(media, dict) or media.get("type") != "image":
+            continue
+        stored_path = media.get("stored_path")
+        if not stored_path:
+            continue
+        data_url = _image_data_url(Path(str(stored_path)), str(media.get("content_type") or ""))
+        if data_url is None:
+            continue
+        return [
+            {
+                "type": "text",
+                "text": chunk.text or "Represent this image for semantic retrieval.",
+            },
+            {
+                "type": "image_url",
+                "image_url": {"url": data_url},
+            },
+        ]
+    return None
+
+
+def _image_data_url(path: Path, content_type: str) -> str | None:
+    if not path.is_file():
+        return None
+    mime_type = content_type.strip().lower()
+    if mime_type not in {"image/jpeg", "image/jpg", "image/png"}:
+        suffix = path.suffix.lower()
+        mime_type = {
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".png": "image/png",
+        }.get(suffix, "")
+    if mime_type not in {"image/jpeg", "image/jpg", "image/png"}:
+        return None
+    if mime_type == "image/jpg":
+        mime_type = "image/jpeg"
+
+    encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+    return f"data:{mime_type};base64,{encoded}"
 
 
 def _record_from_chunk(
