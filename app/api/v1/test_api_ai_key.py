@@ -142,7 +142,7 @@ def _llm_profile_call_kwargs(
 ) -> dict:
     call_kwargs = {
         **(profile.extra_parameters or {}),
-        "model": profile.model_name,
+        "model": _litellm_model_name(provider, profile.model_name),
         "messages": [{"role": "user", "content": message}],
         "api_key": decrypt_secret(api_key.encrypted_api_key),
         "timeout": profile.timeout_seconds or 60,
@@ -170,6 +170,17 @@ def _llm_profile_call_kwargs(
         call_kwargs["custom_llm_provider"] = litellm_provider
 
     return call_kwargs
+
+
+def _litellm_model_name(provider: AIProvider, model_name: str) -> str:
+    provider_code = str(provider.code or "").strip().strip("/")
+    clean_model_name = str(model_name or "").strip().lstrip("/")
+    if not provider_code or not clean_model_name:
+        return clean_model_name
+    provider_prefix = f"{provider_code}/"
+    if clean_model_name.startswith(provider_prefix):
+        return clean_model_name
+    return f"{provider_prefix}{clean_model_name}"
 
 
 def _litellm_provider(provider: AIProvider) -> str | None:
