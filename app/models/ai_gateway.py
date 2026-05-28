@@ -54,7 +54,7 @@ class AIAPIKey(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         nullable=False,
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
-    key_hash: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    key_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     encrypted_api_key: Mapped[str] = mapped_column(Text, nullable=False)
     api_base: Mapped[str | None] = mapped_column(Text)
     endpoint_id: Mapped[str | None] = mapped_column(String(120))

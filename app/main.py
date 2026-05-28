@@ -6,13 +6,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from app.core.config import settings
+from app.graphrag.graph_database import get_kuzu_graph_store
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup: khởi tạo DB connections
     print("🚀 Starting GraphRAG System...")
-    # TODO: init Kùzu, LanceDB, PostgreSQL
+    get_kuzu_graph_store().ensure_schema()
     yield
     # Shutdown: cleanup
     print("👋 Shutting down...")

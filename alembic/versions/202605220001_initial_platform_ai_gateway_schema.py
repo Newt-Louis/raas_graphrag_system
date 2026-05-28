@@ -117,7 +117,6 @@ def upgrade() -> None:
         *_timestamps(),
         sa.ForeignKeyConstraint(["provider_id"], ["ai_providers.id"], ondelete="RESTRICT"),
         sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("key_hash"),
     )
     op.create_index("ix_ai_api_keys_enabled_locked", "ai_api_keys", ["is_enabled", "is_locked"])
     op.create_index("ix_ai_api_keys_provider_status", "ai_api_keys", ["provider_id", "status"])

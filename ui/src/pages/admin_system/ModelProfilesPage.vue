@@ -286,6 +286,12 @@ const modelOptions = computed<SelectOption[]>(() =>
   })),
 )
 
+const extraParametersPlaceholder = computed(() =>
+  form.capability === 'embedding'
+    ? '{"mrl_dimensions":[256,512,1024],"mteb_score":64.2}'
+    : '{"response_format":"json"}',
+)
+
 onMounted(() => {
   void loadModelProfiles()
 })
@@ -1016,7 +1022,7 @@ function messageFromError(error: unknown) {
 
           <label class="form-field col-6 col-md-8 col-sm-12">
             <span>extra_parameters</span>
-            <InputText v-model="form.extra_parameters" placeholder='{"response_format":"json"}' />
+            <InputText v-model="form.extra_parameters" :placeholder="extraParametersPlaceholder" />
           </label>
 
           <Button

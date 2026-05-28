@@ -6,6 +6,7 @@ import html.parser
 import json
 import re
 import zipfile
+from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Iterable
 from xml.etree import ElementTree as ET
@@ -88,9 +89,10 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-class BaseParser:
+class BaseParser(ABC):
+    @abstractmethod
     def parse(self, path: Path, scope: DocumentScope, source: SourceFile) -> ParsedDocument:
-        raise NotImplementedError
+        """Parse one source file into structural document elements."""
 
     def _element(
         self,

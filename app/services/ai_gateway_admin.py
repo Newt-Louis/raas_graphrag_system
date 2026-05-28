@@ -132,15 +132,42 @@ class AIAdminService:
         if not raw_key:
             raise AIAdminValidationError("API key cannot be blank.")
         values = payload.model_dump(exclude={"api_key"})
+        key_hash = hash_secret(raw_key)
+        existing_api_key = self.repository.get_api_key_by_provider_hash(payload.provider_id, key_hash)
+        if existing_api_key is not None:
+            existing_capabilities = {
+                str(capability).strip().lower()
+                for capability in existing_api_key.allowed_capabilities or []
+                if str(capability).strip()
+            }
+            requested_capabilities = {
+                str(capability).strip().lower()
+                for capability in payload.allowed_capabilities or []
+                if str(capability).strip()
+            }
+            updates = {}
+            if existing_capabilities and requested_capabilities and not requested_capabilities.issubset(existing_capabilities):
+                updates["allowed_capabilities"] = sorted(existing_capabilities | requested_capabilities)
+            if not existing_api_key.api_base and payload.api_base:
+                updates["api_base"] = payload.api_base
+            if not existing_api_key.endpoint_id and payload.endpoint_id:
+                updates["endpoint_id"] = payload.endpoint_id
+            if updates:
+                existing_api_key = self._commit_or_conflict(
+                    lambda: self.repository.update_api_key(existing_api_key, updates),
+                    "API key could not be updated.",
+                )
+            return self._api_key_response(existing_api_key)
+
         metadata_json = dict(values.get("metadata_json") or {})
         metadata_json["api_key_preview"] = mask_secret(raw_key)
         values["metadata_json"] = metadata_json
-        values["key_hash"] = hash_secret(raw_key)
+        values["key_hash"] = key_hash
         values["encrypted_api_key"] = encrypt_secret(raw_key)
 
         api_key = self._commit_or_conflict(
             lambda: self.repository.create_api_key(values),
-            "API key already exists.",
+            "API key could not be saved.",
         )
         return self._api_key_response(api_key)
 

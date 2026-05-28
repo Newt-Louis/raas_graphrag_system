@@ -7,7 +7,7 @@ Khác LLM ở mấy điểm cốt yếu:
   - CHIỀU vector phải NHẤT QUÁN: nếu giữa chừng xoay sang model embedding KHÁC
     chiều thì index sẽ hỏng. -> Cảnh báo/khoá chiều bên dưới.
 
-Khung xoay vòng + bắt lỗi kế thừa BaseRotator. Chỗ làm tiếp đánh dấu # TODO.
+Khung xoay vòng + bắt lỗi kế thừa BaseRotator.
 """
 
 from __future__ import annotations
@@ -94,10 +94,6 @@ class EmbeddingRotator(BaseRotator):
     def _extract(self, response: Any, expected_n: int) -> list[list[float]]:
         """
         litellm EmbeddingResponse.data = [{"embedding": [...], "index": i}, ...]
-        TODO(claude-cli):
-          - Một số provider giới hạn batch size -> nếu inputs quá lớn, tự chia nhỏ
-            TRƯỚC khi gọi (đừng để dính BadRequest rồi mới xử lý).
-          - Cân nhắc giữ map index -> để chắc thứ tự vector khớp thứ tự inputs.
         """
         items = sorted(response.data, key=self._item_index)
         vectors = [self._item_embedding(item) for item in items]

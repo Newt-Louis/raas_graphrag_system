@@ -23,6 +23,8 @@ class DocumentIngestResponse(BaseModel):
     embedding_model: str | None = None
     vector_table: str | None = None
     vector_stored_count: int = 0
+    graph_store: str | None = None
+    graph_stored_count: int = 0
     warnings: list[str] = Field(default_factory=list)
 
 
@@ -52,6 +54,26 @@ class VectorDatabaseMatchResponse(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class GraphElementContextResponse(BaseModel):
+    element_id: str
+    element_type: str
+    text: str
+    order_index: int
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class GraphChunkContextResponse(BaseModel):
+    chunk_id: str
+    document_id: str
+    text: str
+    chunk_index: int
+    source_elements: list[GraphElementContextResponse] = Field(default_factory=list)
+    previous_chunk_id: str | None = None
+    next_chunk_id: str | None = None
+    parent_chunk_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class VectorDatabaseQueryResponse(BaseModel):
     query: str
     tenant_id: str
@@ -61,4 +83,5 @@ class VectorDatabaseQueryResponse(BaseModel):
     embedding_profile_id: str | None = None
     embedding_model: str | None = None
     matches: list[VectorDatabaseMatchResponse]
+    graph_context: list[GraphChunkContextResponse] = Field(default_factory=list)
     usage: dict[str, Any] = Field(default_factory=dict)

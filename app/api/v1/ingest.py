@@ -11,6 +11,9 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.db.session import get_db
 from app.graphrag.ai_client import GraphRAGAIClient
+from app.graphrag.graph_database import KuzuGraphStoreError
+from app.graphrag.ingestion_pipeline import GraphRAGIngestionPipeline
+from app.graphrag.query_pipeline import GraphRAGQueryPipeline
 from app.graphrag.vector_database import (
     VectorDatabasePipelineError,
     VectorDatabaseScope,
@@ -22,6 +25,8 @@ from app.graphrag.vector_database.factory import get_lancedb_vector_store
 from app.graphrag.vector_database.pipeline import GraphRAGVectorDatabasePipeline
 from app.schemas.ingest import (
     DocumentIngestResponse,
+    GraphChunkContextResponse,
+    GraphElementContextResponse,
     SupportedFormatsResponse,
     VectorDatabaseMatchResponse,
     VectorDatabaseQueryRequest,
@@ -107,12 +112,7 @@ async def ingest_document(
         embedding_profile_id=embedding_profile_id,
         expected_dim=expected_dim,
     )
-    _persist_graph_records_to_kuzu_placeholder(
-        tenant_id=tenant_id,
-        app_id=app_id,
-        collection_id=collection_id,
-        graph_records=bundle.graph_records,
-    )
+    graph_result = _persist_graph_bundle_to_kuzu(bundle)
 
     source = bundle.parsed_document.source
     return DocumentIngestResponse(
@@ -130,6 +130,8 @@ async def ingest_document(
         embedding_model=vector_result.embedding_model,
         vector_table=vector_result.table_name,
         vector_stored_count=vector_result.stored_count,
+        graph_store=graph_result.store_path,
+        graph_stored_count=graph_result.stored_count,
         warnings=bundle.warnings,
     )
 
@@ -170,6 +172,13 @@ async def query_vector_database(
     except VectorDatabasePipelineError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
 
+    graph_context = _graph_context_for_matches(
+        tenant_id=payload.tenant_id,
+        app_id=payload.app_id,
+        collection_id=payload.collection_id,
+        chunk_ids=[match.chunk_id for match in result.matches],
+    )
+
     return VectorDatabaseQueryResponse(
         query=result.query,
         tenant_id=result.tenant_id,
@@ -191,6 +200,7 @@ async def query_vector_database(
             )
             for match in result.matches
         ],
+        graph_context=graph_context,
     )
 
 
@@ -245,25 +255,55 @@ async def _persist_chunks_to_lancedb(
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
 
 
-def _persist_graph_records_to_kuzu_placeholder(
+def _persist_graph_bundle_to_kuzu(bundle):
+    try:
+        return GraphRAGIngestionPipeline().ingest_graph(bundle)
+    except KuzuGraphStoreError as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
+
+
+def _graph_context_for_matches(
     *,
     tenant_id: str,
     app_id: str,
     collection_id: str | None,
-    graph_records: list,
-) -> None:
-    # TODO: Persist GraphRAG graph records to Kuzu in the same ingest transaction boundary.
-    # Required work:
-    # 1. Add a Kuzu repository/service under app/repositories or app/services that owns schema
-    #    creation for tenant/app scoped document, element, chunk, entity, and relation nodes.
-    # 2. Map graph_records from DocumentIngestionPipeline into Kuzu nodes/edges without mixing
-    #    tenants, apps, collections, or documents.
-    # 3. Make writes idempotent by document_id/chunk_id/content_hash so retries can upsert safely.
-    # 4. Return graph persistence counts/errors in DocumentIngestResponse and fail clearly when
-    #    vector indexing succeeded but graph persistence did not.
-    # 5. Extend query orchestration to merge LanceDB vector matches with Kuzu graph traversal
-    #    results before rerank/synthesis.
-    _ = (tenant_id, app_id, collection_id, graph_records)
+    chunk_ids: list[str],
+) -> list[GraphChunkContextResponse]:
+    if not chunk_ids:
+        return []
+    try:
+        graph_result = GraphRAGQueryPipeline().chunk_context(
+            tenant_id=tenant_id,
+            app_id=app_id,
+            collection_id=collection_id,
+            chunk_ids=chunk_ids,
+        )
+    except KuzuGraphStoreError as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
+
+    return [
+        GraphChunkContextResponse(
+            chunk_id=chunk.chunk_id,
+            document_id=chunk.document_id,
+            text=chunk.text,
+            chunk_index=chunk.chunk_index,
+            previous_chunk_id=chunk.previous_chunk_id,
+            next_chunk_id=chunk.next_chunk_id,
+            parent_chunk_id=chunk.parent_chunk_id,
+            metadata=chunk.metadata,
+            source_elements=[
+                GraphElementContextResponse(
+                    element_id=element.element_id,
+                    element_type=element.element_type,
+                    text=element.text,
+                    order_index=element.order_index,
+                    metadata=element.metadata,
+                )
+                for element in chunk.source_elements
+            ],
+        )
+        for chunk in graph_result.chunks
+    ]
 
 
 def _vector_database_pipeline(

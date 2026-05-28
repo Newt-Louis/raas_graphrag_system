@@ -51,6 +51,14 @@ class AIAdminRepository:
     def get_api_key(self, api_key_id: UUID) -> AIAPIKey | None:
         return self.db.get(AIAPIKey, api_key_id)
 
+    def get_api_key_by_provider_hash(self, provider_id: UUID, key_hash: str) -> AIAPIKey | None:
+        return self.db.scalars(
+            select(AIAPIKey).where(
+                AIAPIKey.provider_id == provider_id,
+                AIAPIKey.key_hash == key_hash,
+            )
+        ).first()
+
     def create_api_key(self, values: dict) -> AIAPIKey:
         api_key = AIAPIKey(**values)
         self.db.add(api_key)

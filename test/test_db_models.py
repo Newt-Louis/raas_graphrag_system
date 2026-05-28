@@ -42,6 +42,11 @@ class DatabaseModelTests(unittest.TestCase):
         self.assertIn("rate_limited_until", llm_pool_columns)
         self.assertIn("rate_limited_until", embedding_pool_columns)
 
+    def test_api_key_hash_is_not_unique(self) -> None:
+        key_hash_column = Base.metadata.tables["ai_api_keys"].columns["key_hash"]
+
+        self.assertFalse(key_hash_column.unique)
+
 
 if __name__ == "__main__":
     unittest.main()
