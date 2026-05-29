@@ -60,7 +60,7 @@ async def ingest_document(
     app_id: str = Form(..., min_length=1),
     collection_id: str | None = Form(default=None),
     chunk_strategy: ChunkStrategy = Form(default=ChunkStrategy.PARENT_CHILD),
-    max_tokens: int = Form(default=700, ge=100, le=4000),
+    max_tokens: int = Form(default=700, ge=100),
     overlap_tokens: int = Form(default=80, ge=0, le=1000),
     embedding_profile_id: UUID | None = Form(default=None),
     expected_dim: int | None = Form(default=None, ge=1),

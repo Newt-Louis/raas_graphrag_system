@@ -330,7 +330,7 @@ function formatBytes(bytes: number) {
       </label>
       <label class="form-field col-3 col-md-4 col-sm-6">
         <span>max_tokens</span>
-        <InputNumber v-model="form.max_tokens" :min="100" :max="4000" show-buttons input-class="full-input" />
+        <InputNumber v-model="form.max_tokens" :min="100" show-buttons input-class="full-input" />
       </label>
       <label class="form-field col-3 col-md-4 col-sm-6">
         <span>overlap_tokens</span>
@@ -338,7 +338,7 @@ function formatBytes(bytes: number) {
       </label>
       <label class="form-field col-3 col-md-4 col-sm-6">
         <span>expected_dim</span>
-        <InputNumber v-model="form.expected_dim" :min="1" show-buttons input-class="full-input" />
+        <InputNumber v-model="form.expected_dim" :min="256" show-buttons input-class="full-input" />
       </label>
     </form>
 

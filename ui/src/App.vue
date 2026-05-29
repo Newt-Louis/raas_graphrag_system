@@ -11,11 +11,11 @@ const isSidebarCollapsed = ref(
   typeof window !== 'undefined' && window.localStorage.getItem(SIDEBAR_KEY) === 'true',
 )
 const navItems = [
-  { to: '/', label: 'Overview', icon: '<>' },
-  { to: '/platform', label: 'System admin', icon: '<>' },
-  { to: '/admin/documents', label: 'Documents', icon: '<>' },
-  { to: '/admin/widget', label: 'Widget builder', icon: '<>' },
-  { to: '/embed/chat', label: 'Embed chat', icon: '<>' },
+  { to: '/', label: 'Overview', icon: 'pi pi-home' },
+  { to: '/platform', label: 'System admin', icon: 'pi pi-server' },
+  { to: '/admin/documents', label: 'Documents', icon: 'pi pi-folder-open' },
+  { to: '/admin/widget', label: 'Widget builder', icon: 'pi pi-objects-column' },
+  { to: '/embed/chat', label: 'Embed chat', icon: 'pi pi-comments' },
 ]
 
 watch(isSidebarCollapsed, (value) => {
@@ -49,7 +49,7 @@ watch(isSidebarCollapsed, (value) => {
 
       <nav class="nav-links">
         <RouterLink v-for="item in navItems" :key="item.to" class="nav-link" :to="item.to">
-          <span class="nav-icon">{{ item.icon }}</span>
+          <i class="nav-icon" :class="item.icon" aria-hidden="true"></i>
           <span class="nav-label">{{ item.label }}</span>
           <span class="nav-tooltip">{{ item.label }}</span>
         </RouterLink>
@@ -193,8 +193,7 @@ watch(isSidebarCollapsed, (value) => {
 .nav-icon {
   flex: 0 0 24px;
   color: currentColor;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 12px;
+  font-size: 16px;
   text-align: center;
 }
 
