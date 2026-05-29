@@ -8,6 +8,8 @@ import InputText from 'primevue/inputtext'
 import ProgressBar from 'primevue/progressbar'
 import Select from 'primevue/select'
 import Tag from 'primevue/tag'
+import GraphVisualizationPage from '@/pages/documents_visualize/GraphVisualizationPage.vue'
+import VectorVisualizationPage from '@/pages/documents_visualize/VectorVisualizationPage.vue'
 import type {
   FileUploadRemoveEvent,
   FileUploadSelectEvent,
@@ -15,6 +17,7 @@ import type {
 } from 'primevue/fileupload'
 
 type UploadStatus = 'pending' | 'uploading' | 'ready' | 'failed'
+type VisualizationTab = 'vector' | 'graph'
 
 interface ChunkStrategyOption {
   label: string
@@ -47,6 +50,7 @@ const selectedFiles = ref<File[]>([])
 const uploadRecords = ref<UploadRecord[]>([])
 const activeUploads = ref(0)
 const lastError = ref('')
+const activeVisualizationTab = ref<VisualizationTab>('vector')
 
 const form = reactive({
   tenant_id: 'tenant-a',
@@ -63,6 +67,11 @@ const chunkStrategyOptions: ChunkStrategyOption[] = [
   { label: 'Parent child', value: 'parent_child' },
   { label: 'Semantic', value: 'semantic' },
   { label: 'Sliding window', value: 'sliding_window' },
+]
+
+const visualizationTabs: { label: string; value: VisualizationTab }[] = [
+  { label: 'Vector', value: 'vector' },
+  { label: 'Graph', value: 'graph' },
 ]
 
 const acceptedFileTypes = [
@@ -295,6 +304,30 @@ function formatBytes(bytes: number) {
     </div>
   </section>
 
+  <section class="panel visualization-panel" aria-labelledby="visualization-title">
+    <div class="panel-title">
+      <h2 id="visualization-title">Visualization</h2>
+    </div>
+
+    <nav class="visualization-tabs" aria-label="Document visualization sections">
+      <button
+        v-for="tab in visualizationTabs"
+        :key="tab.value"
+        class="visualization-tab-button"
+        :class="{ active: activeVisualizationTab === tab.value }"
+        type="button"
+        @click="activeVisualizationTab = tab.value"
+      >
+        {{ tab.label }}
+      </button>
+    </nav>
+
+    <div class="visualization-body">
+      <VectorVisualizationPage v-if="activeVisualizationTab === 'vector'" />
+      <GraphVisualizationPage v-else />
+    </div>
+  </section>
+
   <Dialog
     v-model:visible="uploadDialogVisible"
     modal
@@ -387,6 +420,11 @@ function formatBytes(bytes: number) {
   max-width: 1100px;
 }
 
+.visualization-panel {
+  max-width: 1100px;
+  margin-top: 24px;
+}
+
 .panel-title {
   display: flex;
   align-items: center;
@@ -397,6 +435,32 @@ function formatBytes(bytes: number) {
 
 .panel-title h2 {
   margin: 0;
+}
+
+.visualization-tabs {
+  display: flex;
+  gap: 6px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.visualization-tab-button {
+  min-height: 38px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--muted-text);
+  padding: 0 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.visualization-tab-button.active {
+  border-bottom-color: var(--primary-color);
+  color: var(--primary-color);
+}
+
+.visualization-body {
+  min-height: 240px;
 }
 
 .document-list {
