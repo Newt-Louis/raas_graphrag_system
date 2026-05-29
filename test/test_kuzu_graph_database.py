@@ -55,6 +55,21 @@ class KuzuGraphDatabaseTests(unittest.TestCase):
         self.assertEqual(first.stored_count, second.stored_count)
         self.assertEqual(len(context.chunks), 1)
 
+    def test_document_chunk_stats_are_scoped_by_document(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bundle = _bundle(temp_dir, tenant_id="tenant-a", app_id="app-a")
+            store = KuzuGraphStore(Path(temp_dir) / "kuzu" / "graph.db")
+
+            store.ingest_bundle(bundle)
+            stats = store.document_chunk_stats(
+                scope=GraphDatabaseScope("tenant-a", "app-a", "docs"),
+                document_id=bundle.parsed_document.source.document_id,
+            )
+
+        item = stats[bundle.parsed_document.source.document_id]
+        self.assertEqual(item.chunk_count, len(bundle.chunks))
+        self.assertEqual(item.embeddable_chunk_count, len([chunk for chunk in bundle.chunks if chunk.is_embeddable]))
+
 
 def _bundle(temp_dir: str, *, tenant_id: str, app_id: str):
     path = Path(temp_dir) / f"{tenant_id}-{app_id}.txt"

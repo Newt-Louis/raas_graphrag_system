@@ -65,6 +65,19 @@ class VectorMatch:
 
 
 @dataclass(frozen=True)
+class VectorStoredRecord:
+    vector_id: str
+    document_id: str
+    chunk_id: str
+    chunk_index: int
+    text: str
+    embedding_profile_id: str | None
+    embedding_model: str | None
+    vector_dimension: int | None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class VectorQueryResult:
     query: str
     tenant_id: str

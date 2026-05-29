@@ -8,6 +8,7 @@ from app.graphrag.graph_database.models import (
     GraphChunkContext,
     GraphContextResult,
     GraphDatabaseScope,
+    GraphDocumentChunkStats,
     GraphElementContext,
     GraphIngestResult,
 )
@@ -120,6 +121,62 @@ class KuzuGraphStore:
             raise KuzuGraphStoreError("Graph context query failed.") from exc
         finally:
             connection.close()
+
+    def document_chunk_stats(
+        self,
+        *,
+        scope: GraphDatabaseScope,
+        document_id: str | None = None,
+    ) -> dict[str, GraphDocumentChunkStats]:
+        connection = self._connection()
+        try:
+            self.ensure_schema(connection)
+            where_clauses = [
+                "c.tenant_id = $tenant_id",
+                "c.app_id = $app_id",
+                "c.collection_id = $collection_id",
+            ]
+            params = {
+                "tenant_id": scope.tenant_id,
+                "app_id": scope.app_id,
+                "collection_id": _collection_value(scope.collection_id),
+            }
+            if document_id:
+                where_clauses.append("c.document_id = $document_id")
+                params["document_id"] = document_id
+
+            rows = _rows(
+                connection.execute(
+                    f"""
+                    MATCH (c:Chunk)
+                    WHERE {" AND ".join(where_clauses)}
+                    RETURN c.document_id, c.is_embeddable
+                    """,
+                    params,
+                )
+            )
+        except Exception as exc:
+            if isinstance(exc, KuzuGraphStoreError):
+                raise
+            raise KuzuGraphStoreError("Graph document chunk stats query failed.") from exc
+        finally:
+            connection.close()
+
+        counts: dict[str, dict[str, int]] = {}
+        for row in rows:
+            current_document_id = str(row[0])
+            entry = counts.setdefault(current_document_id, {"chunks": 0, "embeddable": 0})
+            entry["chunks"] += 1
+            if bool(row[1]):
+                entry["embeddable"] += 1
+        return {
+            current_document_id: GraphDocumentChunkStats(
+                document_id=current_document_id,
+                chunk_count=entry["chunks"],
+                embeddable_chunk_count=entry["embeddable"],
+            )
+            for current_document_id, entry in counts.items()
+        }
 
     def delete_document(self, *, scope: GraphDatabaseScope, document_id: str) -> int:
         connection = self._connection()

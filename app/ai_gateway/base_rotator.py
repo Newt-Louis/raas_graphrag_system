@@ -14,6 +14,7 @@ from __future__ import annotations
 import abc
 import asyncio
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -180,7 +181,7 @@ class BaseRotator(abc.ABC):
                     if result.final_reason:  # _apply_verdict ra lệnh dừng
                         return result
 
-            result.final_reason = f"Vượt quá max_attempts={self.max_attempts}."
+            result.final_reason = _max_attempts_reason(result, self.max_attempts)
             logger.error(result.final_reason)
             return result
         finally:
@@ -262,3 +263,26 @@ class BaseRotator(abc.ABC):
         logger.info("Pool cạn tạm thời, đợi %.1fs cho key tỉnh dậy...", wait)
         await asyncio.sleep(wait)
         return True
+
+
+def _max_attempts_reason(result: RotationResult, max_attempts: int) -> str:
+    last_verdict = result.last_verdict
+    if last_verdict is None:
+        return f"Không gọi được provider sau {max_attempts} lần thử."
+
+    detail = _redact_sensitive_text(last_verdict.raw)
+    message = f"Không gọi được provider sau {max_attempts} lần thử. Lỗi cuối: {last_verdict.reason}"
+    if detail:
+        message = f"{message} Chi tiết: {detail}"
+    return message
+
+
+def _redact_sensitive_text(text: str) -> str:
+    if not text:
+        return ""
+    redacted = re.sub(
+        r"(?i)(api[_-]?key|authorization|bearer|x-goog-api-key)(\s*[=:]\s*)\S+",
+        r"\1\2[redacted]",
+        text,
+    )
+    return re.sub(r"(?i)sk-[a-z0-9_-]{8,}", "[redacted]", redacted)

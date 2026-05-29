@@ -49,3 +49,10 @@ class GraphContextResult:
     app_id: str
     collection_id: str | None
     chunks: list[GraphChunkContext]
+
+
+@dataclass(frozen=True)
+class GraphDocumentChunkStats:
+    document_id: str
+    chunk_count: int
+    embeddable_chunk_count: int

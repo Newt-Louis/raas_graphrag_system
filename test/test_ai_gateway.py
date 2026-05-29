@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import unittest
 
+import litellm
+
+from app.ai_gateway.base_rotator import BaseRotator
 from app.ai_gateway import (
     AICapability,
     AIGateway,
@@ -10,6 +13,26 @@ from app.ai_gateway import (
     KeyPool,
     ModelProfile,
 )
+
+
+class AlwaysApiErrorRotator(BaseRotator):
+    async def _call(self, key, **kwargs):
+        raise litellm.APIError(
+            status_code=503,
+            message="provider temporarily unavailable",
+            llm_provider="test",
+            model="embedding-model",
+        )
+
+
+class InvalidRequestApiErrorRotator(BaseRotator):
+    async def _call(self, key, **kwargs):
+        raise litellm.APIError(
+            status_code=400,
+            message="invalid request payload",
+            llm_provider="test",
+            model="embedding-model",
+        )
 
 
 class AIGatewayTests(unittest.IsolatedAsyncioTestCase):
@@ -88,6 +111,47 @@ class AIGatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(records[0].tenant_id, "tenant-a")
         self.assertEqual(records[0].profile_id, "llm-default")
         self.assertEqual(records[0].capability, "llm")
+
+    async def test_max_attempts_reports_last_provider_error_instead_of_counter_only(self) -> None:
+        rotator = AlwaysApiErrorRotator(
+            [
+                KeyConfig(
+                    id="key-1",
+                    provider="test",
+                    model_name="embedding-model",
+                    api_key="secret",
+                )
+            ],
+            max_attempts=2,
+            wait_for_cooldown=False,
+        )
+
+        result = await rotator.run()
+
+        self.assertFalse(result.success)
+        self.assertIn("Không gọi được provider sau 2 lần thử", result.final_reason)
+        self.assertIn("Lỗi API không xác định rõ", result.final_reason)
+        self.assertNotIn("Vượt quá max_attempts", result.final_reason)
+
+    async def test_bad_request_wrapped_as_api_error_stops_without_exhausting_attempts(self) -> None:
+        rotator = InvalidRequestApiErrorRotator(
+            [
+                KeyConfig(
+                    id="key-1",
+                    provider="test",
+                    model_name="embedding-model",
+                    api_key="secret",
+                )
+            ],
+            max_attempts=3,
+            wait_for_cooldown=False,
+        )
+
+        result = await rotator.run()
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.attempts, 1)
+        self.assertIn("Cần admin xử lý", result.final_reason)
 
 
 if __name__ == "__main__":

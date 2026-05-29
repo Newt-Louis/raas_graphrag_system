@@ -9,6 +9,7 @@ from app.graphrag.vector_database.models import (
     VectorMatch,
     VectorQueryRequest,
     VectorQueryResult,
+    VectorStoredRecord,
 )
 from app.graphrag.vector_database.pipeline import (
     GraphRAGVectorDatabasePipeline,
@@ -28,4 +29,5 @@ __all__ = [
     "VectorMatch",
     "VectorQueryRequest",
     "VectorQueryResult",
+    "VectorStoredRecord",
 ]

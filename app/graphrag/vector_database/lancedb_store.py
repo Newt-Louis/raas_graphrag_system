@@ -8,6 +8,7 @@ from app.graphrag.vector_database.models import (
     PrecomputedVectorRecord,
     VectorDatabaseScope,
     VectorMatch,
+    VectorStoredRecord,
 )
 
 
@@ -74,6 +75,57 @@ class LanceDBPrecomputedVectorStore:
             )
         return matches
 
+    def list_records(
+        self,
+        *,
+        scope: VectorDatabaseScope,
+        document_id: str | None = None,
+        limit: int = 10_000,
+    ) -> list[VectorStoredRecord]:
+        connection = self._connection()
+        if self.table_name not in set(connection.table_names(limit=10_000)):
+            return []
+
+        filters = [self._scope_filter(scope)]
+        if document_id:
+            filters.append(f"document_id = {_sql_literal(document_id)}")
+
+        table = connection.open_table(self.table_name)
+        rows = (
+            table.search(None)
+            .where(" AND ".join(filters), prefilter=True)
+            .select(
+                [
+                    "vector",
+                    "vector_id",
+                    "document_id",
+                    "chunk_id",
+                    "chunk_index",
+                    "text",
+                    "embedding_profile_id",
+                    "embedding_model",
+                    "metadata_json",
+                ]
+            )
+            .limit(max(1, limit))
+            .to_list()
+        )
+
+        return [
+            VectorStoredRecord(
+                vector_id=str(row["vector_id"]),
+                document_id=str(row["document_id"]),
+                chunk_id=str(row["chunk_id"]),
+                chunk_index=int(row.get("chunk_index") or 0),
+                text=str(row.get("text") or ""),
+                embedding_profile_id=_optional_string(row.get("embedding_profile_id")),
+                embedding_model=_optional_string(row.get("embedding_model")),
+                vector_dimension=_vector_dimension(row.get("vector")),
+                metadata=_decode_metadata(row.get("metadata_json")),
+            )
+            for row in rows
+        ]
+
     def _connection(self):
         try:
             import lancedb
@@ -128,6 +180,22 @@ def _decode_metadata(raw: Any) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {}
     return decoded if isinstance(decoded, dict) else {}
+
+
+def _optional_string(raw: Any) -> str | None:
+    value = str(raw or "").strip()
+    return value or None
+
+
+def _vector_dimension(raw: Any) -> int | None:
+    if raw is None:
+        return None
+    if hasattr(raw, "tolist"):
+        raw = raw.tolist()
+    try:
+        return len(raw)
+    except TypeError:
+        return None
 
 
 def _similarity_from_distance(distance: float, metric: str) -> float:

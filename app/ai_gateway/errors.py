@@ -75,6 +75,10 @@ def _trim(text: str, n: int = 400) -> str:
     return text if len(text) <= n else text[:n] + "…"
 
 
+def _contains_any(text: str, hints: tuple[str, ...]) -> bool:
+    return any(hint in text for hint in hints)
+
+
 # ---------------------------------------------------------------------------
 # HÀM CHÍNH: phân loại exception -> Verdict
 # Thứ tự except QUAN TRỌNG: con phải đứng TRƯỚC cha.
@@ -196,6 +200,35 @@ def classify_error(exc: Exception) -> Verdict:
         return Verdict(
             ErrorAction.ABORT_ADMIN,
             reason="Request sai cấu trúc/tham số (4xx). Mọi key đều fail như nhau.",
+            notify_admin=True,
+            permanent=True,
+            raw=raw,
+        )
+
+    # Một số provider/litellm adapter bọc lỗi 4xx vào APIError chung.
+    # Phân loại theo nội dung để tránh retry/rotate tới khi hết max_attempts.
+    if _contains_any(text, ("invalid api key", "api key not valid", "unauthorized", "authentication", "401")):
+        return Verdict(
+            ErrorAction.DISABLE_KEY,
+            reason="API key sai hoặc provider từ chối xác thực.",
+            notify_admin=True,
+            permanent=True,
+            raw=raw,
+        )
+
+    if _contains_any(text, ("model not found", "not found", "404", "unknown model", "model does not exist")):
+        return Verdict(
+            ErrorAction.DISABLE_KEY,
+            reason="Model/endpoint không tồn tại hoặc key không truy cập được model này.",
+            notify_admin=True,
+            permanent=True,
+            raw=raw,
+        )
+
+    if _contains_any(text, ("bad request", "invalid request", "invalid argument", "400")):
+        return Verdict(
+            ErrorAction.ABORT_ADMIN,
+            reason="Request embedding sai tham số hoặc model không hỗ trợ payload này.",
             notify_admin=True,
             permanent=True,
             raw=raw,

@@ -25,6 +25,7 @@ def build_embedding_gateway(
     tenant_id: str | None = None,
     app_id: str | None = None,
     profile_id: UUID | None = None,
+    rotator_options: dict | None = None,
 ) -> AIGateway:
     rows = _embedding_pool_rows(db, tenant_id=tenant_id, app_id=app_id, profile_id=profile_id)
     keys: list[KeyConfig] = []
@@ -94,6 +95,7 @@ def build_embedding_gateway(
         ],
         default_embedding_profile_id=runtime_profile_id,
         usage_recorder=lambda record: _record_usage(db, record),
+        rotator_options=rotator_options,
     )
     return gateway
 

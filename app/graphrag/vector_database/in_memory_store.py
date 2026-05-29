@@ -6,6 +6,7 @@ from app.graphrag.vector_database.models import (
     PrecomputedVectorRecord,
     VectorDatabaseScope,
     VectorMatch,
+    VectorStoredRecord,
 )
 
 
@@ -52,6 +53,36 @@ class InMemoryPrecomputedVectorStore:
             )
         matches.sort(key=lambda item: item.similarity, reverse=True)
         return matches[:top_k]
+
+    def list_records(
+        self,
+        *,
+        scope: VectorDatabaseScope,
+        document_id: str | None = None,
+        limit: int = 10_000,
+    ) -> list[VectorStoredRecord]:
+        records: list[VectorStoredRecord] = []
+        for record in self._records.values():
+            if record.tenant_id != scope.tenant_id or record.app_id != scope.app_id:
+                continue
+            if scope.collection_id and record.collection_id != scope.collection_id:
+                continue
+            if document_id and record.document_id != document_id:
+                continue
+            records.append(
+                VectorStoredRecord(
+                    vector_id=record.vector_id,
+                    document_id=record.document_id,
+                    chunk_id=record.chunk_id,
+                    chunk_index=record.chunk_index,
+                    text=record.text,
+                    embedding_profile_id=record.embedding_profile_id,
+                    embedding_model=record.embedding_model,
+                    vector_dimension=len(record.vector),
+                    metadata=dict(record.metadata),
+                )
+            )
+        return records[: max(1, limit)]
 
 
 def _cosine_similarity(left: list[float], right: list[float]) -> float:
