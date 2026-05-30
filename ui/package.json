@@ -13,8 +13,10 @@
   },
   "dependencies": {
     "@primevue/themes": "^4.5.4",
+    "@types/cytoscape": "^3.21.9",
     "@vueuse/core": "^14.3.0",
     "axios": "^1.16.1",
+    "cytoscape": "^3.33.4",
     "interactjs": "^1.10.27",
     "pinia": "^3.0.4",
     "primeicons": "^7.0.0",
