@@ -85,3 +85,25 @@ class GraphRAGAIClient:
             ),
             **overrides,
         )
+
+    async def extract_graph_semantics(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        tenant_id: str,
+        app_id: str,
+        collection_id: str | None = None,
+        profile_id: str | None = None,
+        **overrides: Any,
+    ) -> RotationResult:
+        return await self.gateway.complete(
+            messages,
+            profile_id=profile_id,
+            context=GatewayRequestContext(
+                tenant_id=tenant_id,
+                app_id=app_id,
+                collection_id=collection_id,
+                endpoint="graphrag.graph.entity_extraction",
+            ),
+            **overrides,
+        )

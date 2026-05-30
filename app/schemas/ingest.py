@@ -25,6 +25,9 @@ class DocumentIngestResponse(BaseModel):
     vector_stored_count: int = 0
     graph_store: str | None = None
     graph_stored_count: int = 0
+    semantic_entity_count: int = 0
+    semantic_relation_count: int = 0
+    semantic_mention_count: int = 0
     warnings: list[str] = Field(default_factory=list)
 
 

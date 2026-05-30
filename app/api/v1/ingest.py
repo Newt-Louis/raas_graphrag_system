@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.db.session import get_db
 from app.graphrag.ai_client import GraphRAGAIClient
-from app.graphrag.graph_database import KuzuGraphStoreError
+from app.graphrag.graph_database import KuzuGraphStoreError, SemanticGraphExtractor
 from app.graphrag.ingestion_pipeline import GraphRAGIngestionPipeline
 from app.graphrag.query_pipeline import GraphRAGQueryPipeline
 from app.graphrag.vector_database import (
@@ -32,7 +32,7 @@ from app.schemas.ingest import (
     VectorDatabaseQueryRequest,
     VectorDatabaseQueryResponse,
 )
-from app.services.ai_gateway_runtime import AIGatewayRuntimeError, build_embedding_gateway
+from app.services.ai_gateway_runtime import AIGatewayRuntimeError, build_embedding_gateway, build_llm_gateway
 from app.services.ingestion import DocumentIngestionPipeline
 from app.services.ingestion.models import ChunkStrategy, ChunkingConfig, DocumentChunk, DocumentScope
 from app.services.ingestion.parsers import (
@@ -64,6 +64,8 @@ async def ingest_document(
     overlap_tokens: int = Form(default=80, ge=0, le=1000),
     embedding_profile_id: UUID | None = Form(default=None),
     expected_dim: int | None = Form(default=None, ge=1),
+    extract_semantic_graph: bool = Form(default=False),
+    llm_profile_id: UUID | None = Form(default=None),
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
 ) -> DocumentIngestResponse:
@@ -112,7 +114,12 @@ async def ingest_document(
         embedding_profile_id=embedding_profile_id,
         expected_dim=expected_dim,
     )
-    graph_result = _persist_graph_bundle_to_kuzu(bundle)
+    graph_result = await _persist_graph_bundle_to_kuzu(
+        db=db,
+        bundle=bundle,
+        extract_semantic_graph=extract_semantic_graph,
+        llm_profile_id=llm_profile_id,
+    )
 
     source = bundle.parsed_document.source
     return DocumentIngestResponse(
@@ -132,7 +139,10 @@ async def ingest_document(
         vector_stored_count=vector_result.stored_count,
         graph_store=graph_result.store_path,
         graph_stored_count=graph_result.stored_count,
-        warnings=bundle.warnings,
+        semantic_entity_count=graph_result.semantic_entity_count,
+        semantic_relation_count=graph_result.semantic_relation_count,
+        semantic_mention_count=graph_result.semantic_mention_count,
+        warnings=[*bundle.warnings, *graph_result.semantic_warnings],
     )
 
 
@@ -255,9 +265,34 @@ async def _persist_chunks_to_lancedb(
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
 
 
-def _persist_graph_bundle_to_kuzu(bundle):
+async def _persist_graph_bundle_to_kuzu(
+    *,
+    db: Session,
+    bundle,
+    extract_semantic_graph: bool,
+    llm_profile_id: UUID | None,
+):
     try:
-        return GraphRAGIngestionPipeline().ingest_graph(bundle)
+        semantic_extractor = None
+        if extract_semantic_graph:
+            scope = bundle.parsed_document.scope
+            semantic_extractor = SemanticGraphExtractor(
+                GraphRAGAIClient(
+                    build_llm_gateway(
+                        db,
+                        tenant_id=scope.tenant_id,
+                        app_id=scope.app_id,
+                        profile_id=llm_profile_id,
+                    )
+                ),
+                profile_id=str(llm_profile_id) if llm_profile_id else None,
+            )
+        return await GraphRAGIngestionPipeline().ingest_graph(
+            bundle,
+            semantic_extractor=semantic_extractor,
+        )
+    except AIGatewayRuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     except KuzuGraphStoreError as exc:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
 
@@ -272,11 +307,19 @@ def _graph_context_for_matches(
     if not chunk_ids:
         return []
     try:
-        graph_result = GraphRAGQueryPipeline().chunk_context(
+        pipeline = GraphRAGQueryPipeline()
+        semantic_result = pipeline.semantic_context_for_chunks(
             tenant_id=tenant_id,
             app_id=app_id,
             collection_id=collection_id,
             chunk_ids=chunk_ids,
+            hops=1,
+        )
+        graph_result = pipeline.chunk_context(
+            tenant_id=tenant_id,
+            app_id=app_id,
+            collection_id=collection_id,
+            chunk_ids=list(dict.fromkeys([*chunk_ids, *semantic_result.chunk_ids])),
         )
     except KuzuGraphStoreError as exc:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc

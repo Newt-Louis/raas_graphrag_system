@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
@@ -10,7 +11,14 @@ from app.graphrag.graph_database.models import (
     GraphDatabaseScope,
     GraphDocumentChunkStats,
     GraphElementContext,
+    GraphEntityContext,
     GraphIngestResult,
+    GraphSemanticPersistResult,
+    GraphTraversalResult,
+    GraphVisualizationEdge,
+    GraphVisualizationNode,
+    GraphVisualizationResult,
+    SemanticExtraction,
 )
 from app.services.ingestion.models import IngestionBundle
 
@@ -122,6 +130,149 @@ class KuzuGraphStore:
         finally:
             connection.close()
 
+    def persist_semantic_extraction(
+        self,
+        *,
+        scope: GraphDatabaseScope,
+        document_id: str,
+        chunk_id: str,
+        extraction: SemanticExtraction,
+    ) -> GraphSemanticPersistResult:
+        connection = self._connection()
+        try:
+            self.ensure_schema(connection)
+            chunk_node_id = _record_node_id(scope, "chunk", chunk_id)
+            entity_node_ids: dict[str, str] = {}
+            for entity in extraction.entities:
+                entity_node_id = _entity_node_id(scope, entity.entity_type, entity.normalized_name)
+                entity_node_ids[entity.local_id] = entity_node_id
+                self._upsert_entity(connection, scope, entity_node_id, entity)
+                self._merge_mention(connection, entity_node_id, chunk_node_id, document_id, chunk_id)
+
+            relation_count = 0
+            for relation in extraction.relations:
+                source_id = entity_node_ids.get(relation.source_id)
+                target_id = entity_node_ids.get(relation.target_id)
+                if source_id is None or target_id is None:
+                    continue
+                self._merge_semantic_relation(connection, source_id, target_id, relation)
+                relation_count += 1
+            return GraphSemanticPersistResult(
+                entity_count=len(entity_node_ids),
+                relation_count=relation_count,
+                mention_count=len(entity_node_ids),
+            )
+        except Exception as exc:
+            if isinstance(exc, KuzuGraphStoreError):
+                raise
+            raise KuzuGraphStoreError(f"Semantic graph ingest failed for chunk {chunk_id}.") from exc
+        finally:
+            connection.close()
+
+    def entity_context(
+        self,
+        *,
+        scope: GraphDatabaseScope,
+        entity_names: list[str],
+        hops: int = 2,
+    ) -> GraphTraversalResult:
+        connection = self._connection()
+        try:
+            self.ensure_schema(connection)
+            seed_ids: list[str] = []
+            for name in dict.fromkeys(entity_names):
+                normalized_name = _normalized_name(name)
+                if not normalized_name:
+                    continue
+                rows = _rows(
+                    connection.execute(
+                        """
+                        MATCH (e:Entity)
+                        WHERE e.tenant_id = $tenant_id
+                          AND e.app_id = $app_id
+                          AND e.collection_id = $collection_id
+                          AND e.normalized_name CONTAINS $name
+                        RETURN e.id
+                        """,
+                        {
+                            **_scope_params(scope),
+                            "name": normalized_name,
+                        },
+                    )
+                )
+                seed_ids.extend(str(row[0]) for row in rows)
+            return self._semantic_context(connection, scope, seed_ids, hops=hops)
+        except Exception as exc:
+            if isinstance(exc, KuzuGraphStoreError):
+                raise
+            raise KuzuGraphStoreError("Semantic entity context query failed.") from exc
+        finally:
+            connection.close()
+
+    def semantic_context_for_chunks(
+        self,
+        *,
+        scope: GraphDatabaseScope,
+        chunk_ids: list[str],
+        hops: int = 1,
+    ) -> GraphTraversalResult:
+        connection = self._connection()
+        try:
+            self.ensure_schema(connection)
+            chunk_node_ids = [_record_node_id(scope, "chunk", chunk_id) for chunk_id in dict.fromkeys(chunk_ids)]
+            seed_ids = self._seed_entity_ids_for_chunks(connection, chunk_node_ids)
+            return self._semantic_context(connection, scope, seed_ids, hops=hops)
+        except Exception as exc:
+            if isinstance(exc, KuzuGraphStoreError):
+                raise
+            raise KuzuGraphStoreError("Semantic chunk context query failed.") from exc
+        finally:
+            connection.close()
+
+    def graph_visualization(
+        self,
+        *,
+        scope: GraphDatabaseScope,
+        document_id: str | None = None,
+        include_structure: bool = True,
+        include_semantic: bool = True,
+        limit: int = 2_000,
+    ) -> GraphVisualizationResult:
+        connection = self._connection()
+        try:
+            self.ensure_schema(connection)
+            nodes: list[GraphVisualizationNode] = []
+            edges: list[GraphVisualizationEdge] = []
+            if include_structure:
+                nodes.extend(self._structure_visualization_nodes(connection, scope, document_id))
+                edges.extend(self._structure_visualization_edges(connection, scope, document_id))
+            if include_semantic:
+                nodes.extend(self._semantic_visualization_nodes(connection, scope, document_id))
+                included_ids = {node.id for node in nodes}
+                edges.extend(self._semantic_visualization_edges(connection, scope, document_id, included_ids))
+
+            deduplicated_nodes = list({node.id: node for node in nodes}.values())[:limit]
+            included_ids = {node.id for node in deduplicated_nodes}
+            deduplicated_edges = [
+                edge
+                for edge in {edge.id: edge for edge in edges}.values()
+                if edge.source in included_ids and edge.target in included_ids
+            ][: limit * 4]
+            return GraphVisualizationResult(
+                tenant_id=scope.tenant_id,
+                app_id=scope.app_id,
+                collection_id=scope.collection_id,
+                document_id=document_id,
+                nodes=deduplicated_nodes,
+                edges=deduplicated_edges,
+            )
+        except Exception as exc:
+            if isinstance(exc, KuzuGraphStoreError):
+                raise
+            raise KuzuGraphStoreError("Graph visualization query failed.") from exc
+        finally:
+            connection.close()
+
     def document_chunk_stats(
         self,
         *,
@@ -209,6 +360,7 @@ class KuzuGraphStore:
                 connection.execute("MATCH (e:Element {id: $id}) DETACH DELETE e", {"id": row[0]})
                 deleted += 1
             connection.execute("MATCH (d:Document {id: $id}) DETACH DELETE d", {"id": document_node_id})
+            self._delete_orphan_entities(connection, scope)
             return deleted + 1
         except Exception as exc:
             if isinstance(exc, KuzuGraphStoreError):
@@ -372,6 +524,73 @@ class KuzuGraphStore:
             },
         )
 
+    def _upsert_entity(self, connection, scope: GraphDatabaseScope, entity_node_id: str, entity) -> None:
+        connection.execute(
+            """
+            MERGE (e:Entity {id: $id})
+            SET
+                e.tenant_id = $tenant_id,
+                e.app_id = $app_id,
+                e.collection_id = $collection_id,
+                e.entity_type = $entity_type,
+                e.name = $name,
+                e.normalized_name = $normalized_name,
+                e.description = $description,
+                e.metadata_json = $metadata_json
+            """,
+            {
+                "id": entity_node_id,
+                **_scope_params(scope),
+                "entity_type": entity.entity_type,
+                "name": entity.name,
+                "normalized_name": entity.normalized_name,
+                "description": entity.description,
+                "metadata_json": _json(entity.metadata),
+            },
+        )
+
+    def _merge_mention(
+        self,
+        connection,
+        entity_node_id: str,
+        chunk_node_id: str,
+        document_id: str,
+        chunk_id: str,
+    ) -> None:
+        connection.execute(
+            """
+            MATCH (e:Entity {id: $entity_id}), (c:Chunk {id: $chunk_node_id})
+            MERGE (e)-[r:MENTIONED_IN]->(c)
+            SET r.document_id = $document_id, r.chunk_id = $chunk_id
+            """,
+            {
+                "entity_id": entity_node_id,
+                "chunk_node_id": chunk_node_id,
+                "document_id": document_id,
+                "chunk_id": chunk_id,
+            },
+        )
+
+    def _merge_semantic_relation(self, connection, source_id: str, target_id: str, relation) -> None:
+        connection.execute(
+            """
+            MATCH (source:Entity {id: $source_id}), (target:Entity {id: $target_id})
+            MERGE (source)-[r:SEMANTIC_RELATION {relation_type: $relation_type}]->(target)
+            SET
+                r.description = $description,
+                r.confidence = $confidence,
+                r.metadata_json = $metadata_json
+            """,
+            {
+                "source_id": source_id,
+                "target_id": target_id,
+                "relation_type": relation.relation_type,
+                "description": relation.description,
+                "confidence": float(relation.confidence),
+                "metadata_json": _json(relation.metadata),
+            },
+        )
+
     def _merge_relation(self, connection, rel_type: str, from_id: str, to_id: str) -> None:
         from_label, to_label = _RELATION_ENDPOINTS[rel_type]
         connection.execute(
@@ -455,6 +674,297 @@ class KuzuGraphStore:
             ],
         )
 
+    def _semantic_context(
+        self,
+        connection,
+        scope: GraphDatabaseScope,
+        seed_ids: list[str],
+        *,
+        hops: int,
+    ) -> GraphTraversalResult:
+        entity_ids = list(dict.fromkeys(seed_ids))
+        frontier = list(entity_ids)
+        for _ in range(max(0, min(int(hops), 5))):
+            if not frontier:
+                break
+            rows = _rows(
+                connection.execute(
+                    """
+                    MATCH (source:Entity)-[:SEMANTIC_RELATION]->(target:Entity)
+                    WHERE source.tenant_id = $tenant_id
+                      AND source.app_id = $app_id
+                      AND source.collection_id = $collection_id
+                      AND (source.id IN $entity_ids OR target.id IN $entity_ids)
+                    RETURN source.id, target.id
+                    """,
+                    {**_scope_params(scope), "entity_ids": frontier},
+                )
+            )
+            known = set(entity_ids)
+            frontier = []
+            for row in rows:
+                for entity_id in (str(row[0]), str(row[1])):
+                    if entity_id not in known:
+                        known.add(entity_id)
+                        entity_ids.append(entity_id)
+                        frontier.append(entity_id)
+
+        entity_rows = (
+            _rows(
+                connection.execute(
+                    """
+                    MATCH (e:Entity)
+                    WHERE e.id IN $entity_ids
+                    RETURN e.id, e.entity_type, e.name, e.description
+                    """,
+                    {"entity_ids": entity_ids},
+                )
+            )
+            if entity_ids
+            else []
+        )
+        chunk_rows = (
+            _rows(
+                connection.execute(
+                    """
+                    MATCH (e:Entity)-[:MENTIONED_IN]->(c:Chunk)
+                    WHERE e.id IN $entity_ids
+                      AND c.tenant_id = $tenant_id
+                      AND c.app_id = $app_id
+                      AND c.collection_id = $collection_id
+                    RETURN DISTINCT c.chunk_id
+                    """,
+                    {**_scope_params(scope), "entity_ids": entity_ids},
+                )
+            )
+            if entity_ids
+            else []
+        )
+        return GraphTraversalResult(
+            tenant_id=scope.tenant_id,
+            app_id=scope.app_id,
+            collection_id=scope.collection_id,
+            entities=[
+                GraphEntityContext(
+                    entity_id=str(row[0]),
+                    entity_type=str(row[1]),
+                    name=str(row[2]),
+                    description=str(row[3] or ""),
+                )
+                for row in entity_rows
+            ],
+            chunk_ids=[str(row[0]) for row in chunk_rows],
+        )
+
+    def _seed_entity_ids_for_chunks(self, connection, chunk_node_ids: list[str]) -> list[str]:
+        if not chunk_node_ids:
+            return []
+        rows = _rows(
+            connection.execute(
+                """
+                MATCH (e:Entity)-[:MENTIONED_IN]->(c:Chunk)
+                WHERE c.id IN $chunk_node_ids
+                RETURN DISTINCT e.id
+                """,
+                {"chunk_node_ids": chunk_node_ids},
+            )
+        )
+        return [str(row[0]) for row in rows]
+
+    def _delete_orphan_entities(self, connection, scope: GraphDatabaseScope) -> None:
+        params = _scope_params(scope)
+        entity_rows = _rows(
+            connection.execute(
+                """
+                MATCH (e:Entity)
+                WHERE e.tenant_id = $tenant_id
+                  AND e.app_id = $app_id
+                  AND e.collection_id = $collection_id
+                RETURN e.id
+                """,
+                params,
+            )
+        )
+        mentioned_rows = _rows(
+            connection.execute(
+                """
+                MATCH (e:Entity)-[:MENTIONED_IN]->(:Chunk)
+                WHERE e.tenant_id = $tenant_id
+                  AND e.app_id = $app_id
+                  AND e.collection_id = $collection_id
+                RETURN DISTINCT e.id
+                """,
+                params,
+            )
+        )
+        mentioned_ids = {str(row[0]) for row in mentioned_rows}
+        for row in entity_rows:
+            entity_id = str(row[0])
+            if entity_id not in mentioned_ids:
+                connection.execute("MATCH (e:Entity {id: $id}) DETACH DELETE e", {"id": entity_id})
+
+    def _structure_visualization_nodes(
+        self,
+        connection,
+        scope: GraphDatabaseScope,
+        document_id: str | None,
+    ) -> list[GraphVisualizationNode]:
+        where_document, params = _document_where(scope, document_id, alias="n")
+        nodes: list[GraphVisualizationNode] = []
+        for label, fields in (
+            ("Document", "n.id, n.document_id, n.title, n.filename, n.metadata_json"),
+            ("Element", "n.id, n.element_id, n.element_type, n.text, n.metadata_json"),
+            ("Chunk", "n.id, n.chunk_id, n.chunk_index, n.text, n.metadata_json"),
+        ):
+            rows = _rows(connection.execute(f"MATCH (n:{label}) WHERE {where_document} RETURN {fields}", params))
+            for row in rows:
+                properties = _dict(row[4])
+                properties.update({"record_id": str(row[1]), "detail": str(row[3] or "")})
+                nodes.append(
+                    GraphVisualizationNode(
+                        id=str(row[0]),
+                        node_type=label,
+                        label=str(row[2] or row[1]),
+                        properties=properties,
+                    )
+                )
+        return nodes
+
+    def _structure_visualization_edges(
+        self,
+        connection,
+        scope: GraphDatabaseScope,
+        document_id: str | None,
+    ) -> list[GraphVisualizationEdge]:
+        params: dict[str, Any] = _scope_params(scope)
+        document_filter = ""
+        if document_id:
+            params["document_id"] = document_id
+            document_filter = "AND source.document_id = $document_id"
+        edges: list[GraphVisualizationEdge] = []
+        for from_label, relation_type, to_label in (
+            ("Document", "HAS_ELEMENT", "Element"),
+            ("Document", "HAS_CHUNK", "Chunk"),
+            ("Chunk", "DERIVED_FROM", "Element"),
+            ("Chunk", "NEXT_CHUNK", "Chunk"),
+            ("Chunk", "PARENT_CHUNK", "Chunk"),
+        ):
+            rows = _rows(
+                connection.execute(
+                    f"""
+                    MATCH (source:{from_label})-[:{relation_type}]->(target:{to_label})
+                    WHERE source.tenant_id = $tenant_id
+                      AND source.app_id = $app_id
+                      AND source.collection_id = $collection_id
+                      {document_filter}
+                    RETURN source.id, target.id
+                    """,
+                    params,
+                )
+            )
+            edges.extend(_visualization_edge(str(row[0]), str(row[1]), relation_type) for row in rows)
+        return edges
+
+    def _semantic_visualization_nodes(
+        self,
+        connection,
+        scope: GraphDatabaseScope,
+        document_id: str | None,
+    ) -> list[GraphVisualizationNode]:
+        params: dict[str, Any] = _scope_params(scope)
+        document_filter = ""
+        if document_id:
+            params["document_id"] = document_id
+            document_filter = "AND c.document_id = $document_id"
+        rows = _rows(
+            connection.execute(
+                f"""
+                MATCH (e:Entity)-[:MENTIONED_IN]->(c:Chunk)
+                WHERE e.tenant_id = $tenant_id
+                  AND e.app_id = $app_id
+                  AND e.collection_id = $collection_id
+                  {document_filter}
+                RETURN DISTINCT e.id, e.entity_type, e.name, e.description, e.metadata_json
+                """,
+                params,
+            )
+        )
+        return [
+            GraphVisualizationNode(
+                id=str(row[0]),
+                node_type="Entity",
+                label=str(row[2]),
+                properties={
+                    **_dict(row[4]),
+                    "entity_type": str(row[1]),
+                    "description": str(row[3] or ""),
+                },
+            )
+            for row in rows
+        ]
+
+    def _semantic_visualization_edges(
+        self,
+        connection,
+        scope: GraphDatabaseScope,
+        document_id: str | None,
+        included_ids: set[str],
+    ) -> list[GraphVisualizationEdge]:
+        params: dict[str, Any] = _scope_params(scope)
+        document_filter = ""
+        if document_id:
+            params["document_id"] = document_id
+            document_filter = "AND target.document_id = $document_id"
+        relation_rows = _rows(
+            connection.execute(
+                """
+                MATCH (source:Entity)-[r:SEMANTIC_RELATION]->(target:Entity)
+                WHERE source.tenant_id = $tenant_id
+                  AND source.app_id = $app_id
+                  AND source.collection_id = $collection_id
+                RETURN source.id, target.id, r.relation_type, r.description, r.confidence, r.metadata_json
+                """,
+                _scope_params(scope),
+            )
+        )
+        mention_rows = _rows(
+            connection.execute(
+                f"""
+                MATCH (source:Entity)-[r:MENTIONED_IN]->(target:Chunk)
+                WHERE source.tenant_id = $tenant_id
+                  AND source.app_id = $app_id
+                  AND source.collection_id = $collection_id
+                  {document_filter}
+                RETURN source.id, target.id, r.document_id, r.chunk_id
+                """,
+                params,
+            )
+        )
+        edges = [
+            _visualization_edge(
+                str(row[0]),
+                str(row[1]),
+                str(row[2]),
+                {
+                    **_dict(row[5]),
+                    "description": str(row[3] or ""),
+                    "confidence": float(row[4] or 0),
+                },
+            )
+            for row in relation_rows
+            if str(row[0]) in included_ids and str(row[1]) in included_ids
+        ]
+        edges.extend(
+            _visualization_edge(
+                str(row[0]),
+                str(row[1]),
+                "MENTIONED_IN",
+                {"document_id": str(row[2]), "chunk_id": str(row[3])},
+            )
+            for row in mention_rows
+        )
+        return edges
+
 
 _SCHEMA_STATEMENTS = [
     """
@@ -509,11 +1019,41 @@ _SCHEMA_STATEMENTS = [
         PRIMARY KEY(id)
     )
     """,
+    """
+    CREATE NODE TABLE IF NOT EXISTS Entity(
+        id STRING,
+        tenant_id STRING,
+        app_id STRING,
+        collection_id STRING,
+        entity_type STRING,
+        name STRING,
+        normalized_name STRING,
+        description STRING,
+        metadata_json STRING,
+        PRIMARY KEY(id)
+    )
+    """,
     "CREATE REL TABLE IF NOT EXISTS HAS_ELEMENT(FROM Document TO Element)",
     "CREATE REL TABLE IF NOT EXISTS HAS_CHUNK(FROM Document TO Chunk)",
     "CREATE REL TABLE IF NOT EXISTS DERIVED_FROM(FROM Chunk TO Element)",
     "CREATE REL TABLE IF NOT EXISTS NEXT_CHUNK(FROM Chunk TO Chunk)",
     "CREATE REL TABLE IF NOT EXISTS PARENT_CHUNK(FROM Chunk TO Chunk)",
+    """
+    CREATE REL TABLE IF NOT EXISTS MENTIONED_IN(
+        FROM Entity TO Chunk,
+        document_id STRING,
+        chunk_id STRING
+    )
+    """,
+    """
+    CREATE REL TABLE IF NOT EXISTS SEMANTIC_RELATION(
+        FROM Entity TO Entity,
+        relation_type STRING,
+        description STRING,
+        confidence DOUBLE,
+        metadata_json STRING
+    )
+    """,
 ]
 
 _RELATION_ENDPOINTS = {
@@ -529,6 +1069,11 @@ def _document_node_id(scope: GraphDatabaseScope, document_id: str) -> str:
     return _record_node_id(scope, "document", document_id)
 
 
+def _entity_node_id(scope: GraphDatabaseScope, entity_type: str, normalized_name: str) -> str:
+    digest = sha256(f"{entity_type.casefold()}:{normalized_name}".encode("utf-8")).hexdigest()
+    return _record_node_id(scope, "entity", digest)
+
+
 def _record_node_id(scope: GraphDatabaseScope, record_type: str, record_id: str) -> str:
     collection_id = _collection_value(scope.collection_id)
     return f"{scope.tenant_id}:{scope.app_id}:{collection_id}:{record_type}:{record_id}"
@@ -536,6 +1081,47 @@ def _record_node_id(scope: GraphDatabaseScope, record_type: str, record_id: str)
 
 def _collection_value(collection_id: str | None) -> str:
     return collection_id or ""
+
+
+def _scope_params(scope: GraphDatabaseScope) -> dict[str, str]:
+    return {
+        "tenant_id": scope.tenant_id,
+        "app_id": scope.app_id,
+        "collection_id": _collection_value(scope.collection_id),
+    }
+
+
+def _document_where(scope: GraphDatabaseScope, document_id: str | None, *, alias: str) -> tuple[str, dict[str, Any]]:
+    where = [
+        f"{alias}.tenant_id = $tenant_id",
+        f"{alias}.app_id = $app_id",
+        f"{alias}.collection_id = $collection_id",
+    ]
+    params: dict[str, Any] = _scope_params(scope)
+    if document_id:
+        where.append(f"{alias}.document_id = $document_id")
+        params["document_id"] = document_id
+    return " AND ".join(where), params
+
+
+def _normalized_name(value: str) -> str:
+    return " ".join(str(value).casefold().split())
+
+
+def _visualization_edge(
+    source: str,
+    target: str,
+    relation_type: str,
+    properties: dict[str, Any] | None = None,
+) -> GraphVisualizationEdge:
+    edge_id = sha256(f"{source}:{relation_type}:{target}".encode("utf-8")).hexdigest()
+    return GraphVisualizationEdge(
+        id=edge_id,
+        source=source,
+        target=target,
+        relation_type=relation_type,
+        properties=properties or {},
+    )
 
 
 def _json(value: dict[str, Any]) -> str:

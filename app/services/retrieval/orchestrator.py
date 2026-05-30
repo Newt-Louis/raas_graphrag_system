@@ -9,7 +9,7 @@ class RetrievalOrchestrator:
     """Coordinates retrieval sources before response synthesis.
 
     Vector retrieval selects candidate chunks. Graph retrieval then expands those
-    candidates with Kuzu structural context when a graph store is configured.
+    candidates through semantic entities and returns Kuzu chunk context.
     """
 
     def __init__(self, vector_store: VectorStore, graph_store: KuzuGraphStore | None = None) -> None:
@@ -38,14 +38,22 @@ class RetrievalOrchestrator:
             )
             for result in vector_results
         ]
+        strategy = "vector_only"
         if self.graph_store is not None and contexts:
+            scope = GraphDatabaseScope(
+                tenant_id=request.tenant_id,
+                app_id=request.app_id,
+                collection_id=request.collection_id,
+            )
+            seed_chunk_ids = [context.chunk_id for context in contexts]
+            semantic_result = self.graph_store.semantic_context_for_chunks(
+                scope=scope,
+                chunk_ids=seed_chunk_ids,
+                hops=1,
+            )
             graph_result = self.graph_store.chunk_context(
-                scope=GraphDatabaseScope(
-                    tenant_id=request.tenant_id,
-                    app_id=request.app_id,
-                    collection_id=request.collection_id,
-                ),
-                chunk_ids=[context.chunk_id for context in contexts],
+                scope=scope,
+                chunk_ids=list(dict.fromkeys([*seed_chunk_ids, *semantic_result.chunk_ids])),
             )
             contexts.extend(
                 RetrievedContext(
@@ -69,15 +77,25 @@ class RetrievalOrchestrator:
                             }
                             for element in chunk.source_elements
                         ],
+                        "semantic_entities": [
+                            {
+                                "entity_id": entity.entity_id,
+                                "entity_type": entity.entity_type,
+                                "name": entity.name,
+                                "description": entity.description,
+                            }
+                            for entity in semantic_result.entities
+                        ],
                     },
                 )
                 for chunk in graph_result.chunks
             )
+            strategy = "vector_semantic_graph" if semantic_result.entities else "vector_graph"
         return RetrievalResult(
             query=request.query,
             tenant_id=request.tenant_id,
             app_id=request.app_id,
             collection_id=request.collection_id,
             contexts=contexts,
-            strategy="vector_graph" if self.graph_store is not None else "vector_only",
+            strategy=strategy,
         )

@@ -44,7 +44,7 @@ class _ProfileInfo:
     profile_id: str
     profile_name: str
     model_name: str
-    expected_dimension: int | None
+    embedding_dimension: int | None
 
 
 class VectorVisualizationService:
@@ -158,11 +158,7 @@ class VectorVisualizationService:
             document_id=payload.document_id,
             limit=payload.limit,
         )
-        profiles = self._embedding_profiles(
-            profile_id
-            for profile_id in {record.embedding_profile_id for record in records}
-            if profile_id
-        )
+        profiles = self._embedding_profiles()
         graph_stats = self._graph_document_stats(
             tenant_id=payload.tenant_id,
             app_id=payload.app_id,
@@ -188,7 +184,11 @@ class VectorVisualizationService:
                 embedding_model=embedding_model,
                 vector_dimension=vector_dimension,
                 records=group_records,
-                profile=profiles.get(embedding_profile_id or ""),
+                profile=self._profile_for_record(
+                    profiles,
+                    embedding_profile_id=embedding_profile_id,
+                    embedding_model=embedding_model,
+                ),
                 graph_stats=graph_stats.get(document_id),
                 collection_id=payload.collection_id,
             )
@@ -245,7 +245,7 @@ class VectorVisualizationService:
         graph_stats,
         collection_id: str | None,
     ) -> VectorEmbeddingProfileHealthItem:
-        expected_dimension = profile.expected_dimension if profile else None
+        embedding_dimension = profile.embedding_dimension if profile else None
         graph_chunk_count = graph_stats.chunk_count if graph_stats else None
         graph_embeddable_chunk_count = graph_stats.embeddable_chunk_count if graph_stats else None
         missing_embedding_count = (
@@ -259,9 +259,9 @@ class VectorVisualizationService:
             embedding_profile_id=embedding_profile_id,
             embedding_profile_name=profile.profile_name if profile else None,
             embedding_model=embedding_model or (profile.model_name if profile else None),
-            expected_dimension=expected_dimension,
+            embedding_dimension=embedding_dimension,
             vector_dimension=vector_dimension,
-            dimension_status=_dimension_status(expected_dimension, vector_dimension),
+            dimension_status=_dimension_status(embedding_dimension, vector_dimension),
             embedded_chunk_count=len(records),
             graph_chunk_count=graph_chunk_count,
             graph_embeddable_chunk_count=graph_embeddable_chunk_count,
@@ -270,21 +270,57 @@ class VectorVisualizationService:
             last_indexed_at=_datetime_metadata(records, "last_indexed_at") or _datetime_metadata(records, "indexed_at"),
         )
 
-    def _embedding_profiles(self, profile_ids: Any) -> dict[str, _ProfileInfo]:
-        uuids = [_uuid for value in profile_ids if (_uuid := _uuid_or_none(value)) is not None]
-        if not uuids:
-            return {}
-
-        rows = self.db.scalars(select(EmbeddingModelProfile).where(EmbeddingModelProfile.id.in_(uuids))).all()
+    def _embedding_profiles(self) -> dict[str, _ProfileInfo]:
+        rows = self.db.scalars(select(EmbeddingModelProfile)).all()
         return {
             str(row.id): _ProfileInfo(
                 profile_id=str(row.id),
                 profile_name=row.profile_name,
                 model_name=row.model_name,
-                expected_dimension=row.embedding_dimensions,
+                embedding_dimension=row.embedding_dimensions,
             )
             for row in rows
         }
+
+    def _profile_for_record(
+        self,
+        profiles: dict[str, _ProfileInfo],
+        *,
+        embedding_profile_id: str | None,
+        embedding_model: str | None,
+    ) -> _ProfileInfo | None:
+        profile = profiles.get(embedding_profile_id or "")
+        if profile is not None or not embedding_model:
+            return profile
+
+        matching_profiles = [
+            candidate
+            for candidate in profiles.values()
+            if _embedding_models_match(candidate.model_name, embedding_model)
+        ]
+        if not matching_profiles:
+            return None
+
+        dimensions = {
+            candidate.embedding_dimension
+            for candidate in matching_profiles
+            if candidate.embedding_dimension is not None
+        }
+        embedding_dimension = next(iter(dimensions)) if len(dimensions) == 1 else None
+        if len(matching_profiles) == 1:
+            candidate = matching_profiles[0]
+            return _ProfileInfo(
+                profile_id=embedding_profile_id or candidate.profile_id,
+                profile_name=candidate.profile_name,
+                model_name=candidate.model_name,
+                embedding_dimension=embedding_dimension,
+            )
+        return _ProfileInfo(
+            profile_id=embedding_profile_id or "runtime-embedding-pool",
+            profile_name="runtime embedding pool",
+            model_name=embedding_model,
+            embedding_dimension=embedding_dimension,
+        )
 
     def _graph_context_by_chunk_id(
         self,
@@ -363,12 +399,18 @@ def _uuid_or_none(value: str | UUID | None) -> UUID | None:
         return None
 
 
-def _dimension_status(expected_dimension: int | None, vector_dimension: int | None) -> str:
-    if expected_dimension is None or vector_dimension is None:
+def _dimension_status(embedding_dimension: int | None, vector_dimension: int | None) -> str:
+    if embedding_dimension is None or vector_dimension is None:
         return "unknown"
-    if expected_dimension == vector_dimension:
+    if embedding_dimension == vector_dimension:
         return "ok"
     return "mismatch"
+
+
+def _embedding_models_match(configured_model: str, indexed_model: str) -> bool:
+    configured = configured_model.strip().lower().strip("/")
+    indexed = indexed_model.strip().lower().strip("/")
+    return configured == indexed or configured.endswith(f"/{indexed}") or indexed.endswith(f"/{configured}")
 
 
 def _metadata_value(records: list, key: str) -> str | None:

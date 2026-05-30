@@ -183,12 +183,112 @@ class VectorVisualizationServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(response.documents), 1)
         item = response.documents[0]
         self.assertEqual(item.embedding_profile_name, "Embedding Profile")
-        self.assertEqual(item.expected_dimension, 3)
+        self.assertEqual(item.embedding_dimension, 3)
         self.assertEqual(item.vector_dimension, 3)
         self.assertEqual(item.dimension_status, "ok")
         self.assertEqual(item.embedded_chunk_count, 2)
         self.assertEqual(item.graph_embeddable_chunk_count, 3)
         self.assertEqual(item.missing_embedding_count, 1)
+
+    async def test_embedding_health_resolves_runtime_pool_dimension_by_model(self) -> None:
+        profile = EmbeddingModelProfile(
+            id=uuid4(),
+            provider_id=uuid4(),
+            api_key_id=uuid4(),
+            profile_name="Gemini Embedding",
+            model_name="gemini-embedding-2",
+            embedding_dimensions=3,
+            timeout_seconds=60,
+        )
+        store = InMemoryPrecomputedVectorStore()
+        store.add_records(
+            [
+                PrecomputedVectorRecord(
+                    vector_id="policy-refund",
+                    vector=[1.0, 0.0, 0.0],
+                    text="Refund policy.",
+                    tenant_id="tenant-a",
+                    app_id="app-a",
+                    collection_id="docs",
+                    document_id="policy",
+                    chunk_id="refund-policy",
+                    chunk_index=0,
+                    embedding_profile_id="runtime-embedding-pool",
+                    embedding_model="gemini/gemini-embedding-2",
+                    metadata={"filename": "policy.txt"},
+                ),
+            ]
+        )
+        service = VectorVisualizationService(
+            db=FakeSession([profile]),
+            vector_store=store,
+            graph_store=FakeGraphStore(),
+        )
+
+        response = service.embedding_health(
+            VectorHealthRequest(
+                tenant_id="tenant-a",
+                app_id="app-a",
+                collection_id="docs",
+            )
+        )
+
+        item = response.documents[0]
+        self.assertEqual(item.embedding_profile_name, "Gemini Embedding")
+        self.assertEqual(item.embedding_dimension, 3)
+        self.assertEqual(item.vector_dimension, 3)
+        self.assertEqual(item.dimension_status, "ok")
+
+    async def test_embedding_health_keeps_runtime_pool_dimension_unknown_when_profiles_conflict(self) -> None:
+        profiles = [
+            EmbeddingModelProfile(
+                id=uuid4(),
+                provider_id=uuid4(),
+                api_key_id=uuid4(),
+                profile_name=f"Gemini Embedding {dimension}",
+                model_name="gemini-embedding-2",
+                embedding_dimensions=dimension,
+                timeout_seconds=60,
+            )
+            for dimension in (3, 4)
+        ]
+        store = InMemoryPrecomputedVectorStore()
+        store.add_records(
+            [
+                PrecomputedVectorRecord(
+                    vector_id="policy-refund",
+                    vector=[1.0, 0.0, 0.0],
+                    text="Refund policy.",
+                    tenant_id="tenant-a",
+                    app_id="app-a",
+                    collection_id="docs",
+                    document_id="policy",
+                    chunk_id="refund-policy",
+                    chunk_index=0,
+                    embedding_profile_id="runtime-embedding-pool",
+                    embedding_model="gemini/gemini-embedding-2",
+                    metadata={"filename": "policy.txt"},
+                ),
+            ]
+        )
+        service = VectorVisualizationService(
+            db=FakeSession(profiles),
+            vector_store=store,
+            graph_store=FakeGraphStore(),
+        )
+
+        response = service.embedding_health(
+            VectorHealthRequest(
+                tenant_id="tenant-a",
+                app_id="app-a",
+                collection_id="docs",
+            )
+        )
+
+        item = response.documents[0]
+        self.assertIsNone(item.embedding_dimension)
+        self.assertEqual(item.vector_dimension, 3)
+        self.assertEqual(item.dimension_status, "unknown")
 
     async def test_embedding_health_includes_graph_only_documents(self) -> None:
         service = VectorVisualizationService(

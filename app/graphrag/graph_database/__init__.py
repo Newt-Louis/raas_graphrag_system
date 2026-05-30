@@ -6,8 +6,18 @@ from app.graphrag.graph_database.models import (
     GraphDatabaseScope,
     GraphDocumentChunkStats,
     GraphElementContext,
+    GraphEntityContext,
     GraphIngestResult,
+    GraphSemanticPersistResult,
+    GraphTraversalResult,
+    GraphVisualizationEdge,
+    GraphVisualizationNode,
+    GraphVisualizationResult,
+    SemanticEntity,
+    SemanticExtraction,
+    SemanticRelation,
 )
+from app.graphrag.graph_database.semantic_extraction import SemanticExtractionError, SemanticGraphExtractor
 
 __all__ = [
     "GraphChunkContext",
@@ -15,8 +25,19 @@ __all__ = [
     "GraphDatabaseScope",
     "GraphDocumentChunkStats",
     "GraphElementContext",
+    "GraphEntityContext",
     "GraphIngestResult",
+    "GraphSemanticPersistResult",
+    "GraphTraversalResult",
+    "GraphVisualizationEdge",
+    "GraphVisualizationNode",
+    "GraphVisualizationResult",
     "KuzuGraphStore",
     "KuzuGraphStoreError",
+    "SemanticEntity",
+    "SemanticExtraction",
+    "SemanticExtractionError",
+    "SemanticGraphExtractor",
+    "SemanticRelation",
     "get_kuzu_graph_store",
 ]

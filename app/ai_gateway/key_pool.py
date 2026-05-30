@@ -31,6 +31,7 @@ class KeyConfig:
     model_name: str               # tên model litellm: "gemini/gemini-2.0-flash" ...
     api_key: str                  # ĐÃ giải mã (decrypt trước khi đưa vào đây)
     capability: str = ""          # "llm" | "embedding"; profile sẽ điền nếu bỏ trống
+    model_profile_id: str | None = None  # id masterdata của profile đã hydrate key này
     api_base: str | None = None   # cho endpoint tự host / OpenAI-compatible
     endpoint_id: str | None = None
     enabled: bool = True

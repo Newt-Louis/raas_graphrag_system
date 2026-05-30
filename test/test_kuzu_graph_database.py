@@ -2,9 +2,18 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from asyncio import run
 from pathlib import Path
 
-from app.graphrag.graph_database import GraphDatabaseScope, KuzuGraphStore
+from app.graphrag.graph_database import (
+    GraphDatabaseScope,
+    KuzuGraphStore,
+    SemanticEntity,
+    SemanticExtraction,
+    SemanticRelation,
+)
+from app.graphrag.graph_database.semantic_extraction import parse_semantic_extraction
+from app.graphrag.ingestion_pipeline import GraphRAGIngestionPipeline
 from app.services.ingestion import DocumentIngestionPipeline
 from app.services.ingestion.models import ChunkStrategy, ChunkingConfig, DocumentScope
 
@@ -69,6 +78,82 @@ class KuzuGraphDatabaseTests(unittest.TestCase):
         item = stats[bundle.parsed_document.source.document_id]
         self.assertEqual(item.chunk_count, len(bundle.chunks))
         self.assertEqual(item.embeddable_chunk_count, len([chunk for chunk in bundle.chunks if chunk.is_embeddable]))
+
+    def test_persists_semantic_graph_traverses_entities_and_returns_visualization(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bundle = _bundle(temp_dir, tenant_id="tenant-a", app_id="app-a")
+            store = KuzuGraphStore(Path(temp_dir) / "kuzu" / "graph.db")
+            scope = GraphDatabaseScope("tenant-a", "app-a", "docs")
+            chunk = bundle.chunks[0]
+
+            store.ingest_bundle(bundle)
+            stored = store.persist_semantic_extraction(
+                scope=scope,
+                document_id=chunk.document_id,
+                chunk_id=chunk.chunk_id,
+                extraction=SemanticExtraction(
+                    entities=[
+                        SemanticEntity("e1", "Technology", "LanceDB", "lancedb"),
+                        SemanticEntity("e2", "Concept", "Vector search", "vector search"),
+                    ],
+                    relations=[SemanticRelation("e1", "e2", "IMPLEMENTS", confidence=0.9)],
+                ),
+            )
+            traversal = store.entity_context(scope=scope, entity_names=["LanceDB"], hops=1)
+            visualization = store.graph_visualization(scope=scope, document_id=chunk.document_id)
+            store.delete_document(scope=scope, document_id=chunk.document_id)
+            after_delete = store.graph_visualization(scope=scope)
+
+        self.assertEqual(stored.entity_count, 2)
+        self.assertEqual(stored.relation_count, 1)
+        self.assertIn(chunk.chunk_id, traversal.chunk_ids)
+        self.assertIn("Entity", {node.node_type for node in visualization.nodes})
+        self.assertIn("IMPLEMENTS", {edge.relation_type for edge in visualization.edges})
+        self.assertIn("MENTIONED_IN", {edge.relation_type for edge in visualization.edges})
+        self.assertNotIn("Entity", {node.node_type for node in after_delete.nodes})
+
+    def test_semantic_extraction_parser_enforces_ontology_allowlist(self) -> None:
+        extraction = parse_semantic_extraction(
+            """
+            ```json
+            {
+              "entities": [
+                {"id": "e1", "type": "Technology", "name": "LanceDB"},
+                {"id": "e2", "type": "Unsupported", "name": "Skip me"}
+              ],
+              "relations": [
+                {"from_id": "e1", "type": "RELATED_TO", "to_id": "e1"},
+                {"from_id": "e1", "type": "INVENTED", "to_id": "e2"}
+              ]
+            }
+            ```
+            """
+        )
+
+        self.assertEqual([entity.name for entity in extraction.entities], ["LanceDB"])
+        self.assertEqual([relation.relation_type for relation in extraction.relations], ["RELATED_TO"])
+
+    def test_ingestion_pipeline_runs_injected_semantic_extractor(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bundle = _bundle(temp_dir, tenant_id="tenant-a", app_id="app-a")
+            store = KuzuGraphStore(Path(temp_dir) / "kuzu" / "graph.db")
+
+            result = run(
+                GraphRAGIngestionPipeline(store).ingest_graph(
+                    bundle,
+                    semantic_extractor=FakeSemanticExtractor(),
+                )
+            )
+
+        self.assertGreater(result.semantic_entity_count, 0)
+        self.assertGreater(result.semantic_mention_count, 0)
+
+
+class FakeSemanticExtractor:
+    async def extract_chunk(self, text, **kwargs):
+        return SemanticExtraction(
+            entities=[SemanticEntity("e1", "Technology", "LanceDB", "lancedb")],
+        )
 
 
 def _bundle(temp_dir: str, *, tenant_id: str, app_id: str):

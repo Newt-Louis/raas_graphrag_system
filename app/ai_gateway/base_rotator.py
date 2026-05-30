@@ -161,6 +161,7 @@ class BaseRotator(abc.ABC):
                         result.usage = call_result.usage
                     else:
                         result.data = call_result
+                    result.profile_id = key.config.model_profile_id or self.profile_id
                     result.used_key_id = key.config.id
                     result.used_provider = key.config.provider
                     result.used_model = key.config.model_name

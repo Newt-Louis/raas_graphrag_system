@@ -58,7 +58,7 @@ interface VectorHealthItem {
   embedding_profile_id: string | null
   embedding_profile_name: string | null
   embedding_model: string | null
-  expected_dimension: number | null
+  embedding_dimension: number | null
   vector_dimension: number | null
   dimension_status: 'ok' | 'mismatch' | 'unknown' | string
   embedded_chunk_count: number
@@ -147,12 +147,20 @@ async function refreshHealth() {
     })
     const payload = await response.json().catch(() => ({}))
     if (!response.ok) {
+      if (response.status === 405) {
+        throw new Error(
+          `POST ${API_BASE}/health is not registered by the running backend. Restart the backend process so it loads the visualize health route.`,
+        )
+      }
       throw new Error(errorDetail(payload, response.statusText))
     }
     healthResult.value = payload as VectorHealthResponse
     selectedHealthItem.value = healthResult.value.documents[0] ?? null
   } catch (error) {
-    healthError.value = error instanceof Error ? error.message : 'Vector health check failed.'
+    healthResult.value = null
+    selectedHealthItem.value = null
+    const message = error instanceof Error ? error.message : 'Vector health check failed.'
+    healthError.value = `Embedding profile health request failed: ${message}`
   } finally {
     isLoadingHealth.value = false
   }
@@ -251,7 +259,6 @@ function scoreWidth(value: number) {
     </form>
 
     <p v-if="searchError" class="error-text">{{ searchError }}</p>
-    <p v-if="healthError" class="error-text">{{ healthError }}</p>
 
     <section v-if="searchResult" class="result-section" aria-label="Vector search results">
       <div class="section-head">
@@ -357,6 +364,8 @@ function scoreWidth(value: number) {
         </div>
       </div>
 
+      <p v-if="healthError" class="error-text">{{ healthError }}</p>
+
       <DataTable
         v-model:selection="selectedHealthItem"
         :value="healthDocuments"
@@ -381,7 +390,7 @@ function scoreWidth(value: number) {
           <template #body="{ data }">
             <div class="dimension-cell">
               <Tag :value="data.dimension_status" :severity="statusSeverity(data.dimension_status)" />
-              <span>{{ data.vector_dimension || '-' }} / {{ data.expected_dimension || '-' }}</span>
+              <span>{{ data.vector_dimension || '-' }} / {{ data.embedding_dimension || '-' }}</span>
             </div>
           </template>
         </Column>

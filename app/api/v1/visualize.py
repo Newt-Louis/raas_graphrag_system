@@ -8,13 +8,15 @@ from app.graphrag.graph_database import get_kuzu_graph_store
 from app.graphrag.vector_database import VectorDatabasePipelineError
 from app.graphrag.vector_database.factory import get_lancedb_vector_store
 from app.schemas.visualize import (
+    GraphVisualizationRequest,
+    GraphVisualizationResponse,
     VectorEmbeddingProfileHealthResponse,
     VectorHealthRequest,
     VectorSearchDebugRequest,
     VectorSearchDebugResponse,
 )
 from app.services.ai_gateway_runtime import AIGatewayRuntimeError
-from app.services.visualize import VectorVisualizationService, VisualizeInputError
+from app.services.visualize import GraphVisualizationService, VectorVisualizationService, VisualizeInputError
 
 router = APIRouter(prefix="/visualize", tags=["visualize"])
 
@@ -45,6 +47,16 @@ def vector_embedding_health(
     service = _vector_service(db)
     try:
         return service.embedding_health(payload)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+
+
+@router.post("/graph", response_model=GraphVisualizationResponse)
+def graph_visualization(
+    payload: GraphVisualizationRequest,
+) -> GraphVisualizationResponse:
+    try:
+        return GraphVisualizationService().graph_data(payload)
     except RuntimeError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
 

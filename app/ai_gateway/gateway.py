@@ -164,6 +164,7 @@ class AIGateway:
                 "keys": [
                     {
                         "id": key.id,
+                        "model_profile_id": key.model_profile_id,
                         "provider": key.provider,
                         "model": key.model_name,
                         "capability": key.capability,
@@ -280,7 +281,7 @@ class AIGateway:
     ) -> None:
         last_verdict = result.last_verdict
         record = UsageRecord(
-            profile_id=profile.id,
+            profile_id=result.profile_id or profile.id,
             capability=profile.capability.value,
             provider=result.used_provider,
             key_id=result.used_key_id,

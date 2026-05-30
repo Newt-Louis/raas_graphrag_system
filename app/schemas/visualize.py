@@ -77,7 +77,7 @@ class VectorEmbeddingProfileHealthItem(BaseModel):
     embedding_profile_id: str | None = None
     embedding_profile_name: str | None = None
     embedding_model: str | None = None
-    expected_dimension: int | None = None
+    embedding_dimension: int | None = None
     vector_dimension: int | None = None
     dimension_status: str
     embedded_chunk_count: int
@@ -96,3 +96,42 @@ class VectorEmbeddingProfileHealthResponse(BaseModel):
     checked_at: datetime
     total_embedded_chunks: int
     documents: list[VectorEmbeddingProfileHealthItem]
+
+
+class GraphVisualizationRequest(VisualizationScopeRequest):
+    document_id: str | None = None
+    include_structure: bool = True
+    include_semantic: bool = True
+    limit: int = Field(default=2_000, ge=1, le=10_000)
+
+
+class GraphVisualizationNode(BaseModel):
+    id: str
+    node_type: str
+    label: str
+    properties: dict[str, Any] = Field(default_factory=dict)
+
+
+class GraphVisualizationEdge(BaseModel):
+    id: str
+    source: str
+    target: str
+    relation_type: str
+    properties: dict[str, Any] = Field(default_factory=dict)
+
+
+class GraphVisualizationStats(BaseModel):
+    node_count: int
+    edge_count: int
+    nodes_by_type: dict[str, int] = Field(default_factory=dict)
+    edges_by_type: dict[str, int] = Field(default_factory=dict)
+
+
+class GraphVisualizationResponse(BaseModel):
+    tenant_id: str
+    app_id: str
+    collection_id: str | None = None
+    document_id: str | None = None
+    nodes: list[GraphVisualizationNode]
+    edges: list[GraphVisualizationEdge]
+    stats: GraphVisualizationStats

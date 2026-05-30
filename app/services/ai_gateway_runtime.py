@@ -12,6 +12,7 @@ from app.models.ai_gateway import (
     AIProvider,
     AIUsageEvent,
     EmbeddingRotationPool,
+    LLMRotationPool,
 )
 
 
@@ -41,7 +42,7 @@ def build_embedding_gateway(
             continue
         if api_key.provider_id != profile.provider_id:
             continue
-        if not _is_runtime_row_usable(pool, provider, api_key):
+        if not _is_runtime_row_usable(pool, provider, api_key, capability=AICapability.EMBEDDING):
             continue
 
         if expected_dim is None:
@@ -64,6 +65,7 @@ def build_embedding_gateway(
                 model_name=_litellm_model_name(provider, profile.model_name),
                 api_key=decrypt_secret(api_key.encrypted_api_key),
                 capability=AICapability.EMBEDDING.value,
+                model_profile_id=str(profile.id),
                 api_base=profile.api_base or api_key.api_base or provider.base_url,
                 endpoint_id=profile.endpoint_id or api_key.endpoint_id,
                 enabled=True,
@@ -100,6 +102,78 @@ def build_embedding_gateway(
     return gateway
 
 
+def build_llm_gateway(
+    db: Session,
+    *,
+    tenant_id: str | None = None,
+    app_id: str | None = None,
+    profile_id: UUID | None = None,
+    rotator_options: dict | None = None,
+) -> AIGateway:
+    rows = _llm_pool_rows(db, tenant_id=tenant_id, app_id=app_id, profile_id=profile_id)
+    keys: list[KeyConfig] = []
+    default_params: dict = {}
+
+    for pool in rows:
+        profile = pool.profile
+        provider = db.get(AIProvider, profile.provider_id)
+        api_key = db.get(AIAPIKey, profile.api_key_id)
+        if provider is None or api_key is None:
+            continue
+        if api_key.provider_id != profile.provider_id:
+            continue
+        if not _is_runtime_row_usable(pool, provider, api_key, capability=AICapability.LLM):
+            continue
+
+        if not default_params:
+            default_params = {
+                "timeout": profile.timeout_seconds,
+                **({"temperature": profile.temperature} if profile.temperature is not None else {}),
+                **({"top_p": profile.top_p} if profile.top_p is not None else {}),
+                **({"top_k": profile.top_k} if profile.top_k is not None else {}),
+                **({"max_tokens": profile.max_output_tokens} if profile.max_output_tokens is not None else {}),
+                **(profile.extra_parameters or {}),
+            }
+        keys.append(
+            KeyConfig(
+                id=str(api_key.id),
+                provider=provider.code,
+                model_name=_litellm_model_name(provider, profile.model_name),
+                api_key=decrypt_secret(api_key.encrypted_api_key),
+                capability=AICapability.LLM.value,
+                model_profile_id=str(profile.id),
+                api_base=profile.api_base or api_key.api_base or provider.base_url,
+                endpoint_id=profile.endpoint_id or api_key.endpoint_id,
+                enabled=True,
+                locked=False,
+                tenant_allowlist={str(pool.tenant_id)} if pool.tenant_id else set(),
+                app_allowlist={str(pool.app_id)} if pool.app_id else set(),
+                extra={
+                    **(profile.extra_parameters or {}),
+                    **_provider_override(provider),
+                },
+            )
+        )
+
+    if not keys:
+        raise AIGatewayRuntimeError("No usable LLM model profile is available for this scope.")
+
+    runtime_profile_id = str(profile_id) if profile_id else "runtime-llm-pool"
+    return AIGateway(
+        [
+            ModelProfile(
+                id=runtime_profile_id,
+                capability=AICapability.LLM,
+                keys=keys,
+                default_params=default_params,
+            )
+        ],
+        default_llm_profile_id=runtime_profile_id,
+        usage_recorder=lambda record: _record_usage(db, record),
+        rotator_options=rotator_options,
+    )
+
+
 def _embedding_pool_rows(
     db: Session,
     *,
@@ -128,6 +202,34 @@ def _embedding_pool_rows(
     ]
 
 
+def _llm_pool_rows(
+    db: Session,
+    *,
+    tenant_id: str | None,
+    app_id: str | None,
+    profile_id: UUID | None,
+) -> list[LLMRotationPool]:
+    statement = (
+        select(LLMRotationPool)
+        .options(joinedload(LLMRotationPool.profile))
+        .join(LLMRotationPool.profile)
+        .order_by(
+            LLMRotationPool.current_position.desc(),
+            LLMRotationPool.rotation_order,
+            LLMRotationPool.created_at,
+        )
+    )
+    if profile_id is not None:
+        statement = statement.where(LLMRotationPool.profile_id == profile_id)
+
+    rows = list(db.scalars(statement).all())
+    return [
+        row
+        for row in rows
+        if _scope_matches(row.tenant_id, tenant_id) and _scope_matches(row.app_id, app_id)
+    ]
+
+
 def _scope_matches(row_scope: object, request_scope: str | None) -> bool:
     if row_scope is None:
         return True
@@ -136,7 +238,13 @@ def _scope_matches(row_scope: object, request_scope: str | None) -> bool:
     return str(row_scope) == request_scope
 
 
-def _is_runtime_row_usable(pool: EmbeddingRotationPool, provider: AIProvider, api_key: AIAPIKey) -> bool:
+def _is_runtime_row_usable(
+    pool: EmbeddingRotationPool | LLMRotationPool,
+    provider: AIProvider,
+    api_key: AIAPIKey,
+    *,
+    capability: AICapability,
+) -> bool:
     if not pool.is_enabled or pool.is_locked or pool.today_quota_exhausted:
         return False
     if not provider.is_enabled or provider.is_locked:
@@ -146,7 +254,7 @@ def _is_runtime_row_usable(pool: EmbeddingRotationPool, provider: AIProvider, ap
     if api_key.status in {"disabled", "locked"}:
         return False
     allowed_capabilities = [str(capability).lower() for capability in api_key.allowed_capabilities or []]
-    return not allowed_capabilities or AICapability.EMBEDDING.value in allowed_capabilities
+    return not allowed_capabilities or capability.value in allowed_capabilities
 
 
 def _provider_override(provider: AIProvider) -> dict:

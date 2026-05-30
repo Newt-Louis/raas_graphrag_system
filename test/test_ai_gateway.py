@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import AsyncMock, patch
 
 import litellm
 
@@ -111,6 +112,30 @@ class AIGatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(records[0].tenant_id, "tenant-a")
         self.assertEqual(records[0].profile_id, "llm-default")
         self.assertEqual(records[0].capability, "llm")
+
+    async def test_result_and_usage_use_hydrated_master_profile_id(self) -> None:
+        records = []
+        profile = ModelProfile(
+            id="runtime-pool",
+            capability=AICapability.LLM,
+            keys=[
+                KeyConfig(
+                    id="llm-key-1",
+                    provider="test",
+                    model_name="model",
+                    api_key="secret",
+                    model_profile_id="master-profile-id",
+                )
+            ],
+        )
+        gateway = AIGateway([profile], usage_recorder=records.append)
+
+        with patch("app.ai_gateway.llm_rotator.LLMRotator._call", new=AsyncMock(return_value="ok")):
+            result = await gateway.complete([{"role": "user", "content": "hello"}])
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.profile_id, "master-profile-id")
+        self.assertEqual(records[0].profile_id, "master-profile-id")
 
     async def test_max_attempts_reports_last_provider_error_instead_of_counter_only(self) -> None:
         rotator = AlwaysApiErrorRotator(
