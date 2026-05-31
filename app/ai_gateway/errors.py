@@ -1,5 +1,5 @@
 """
-errors.py — Phân loại MỌI lỗi có thể xảy ra khi gọi API (LLM + Embedding) qua litellm.
+errors.py — Phân loại lỗi khi gọi LLM qua litellm.
 
 Đây là "bộ não" của engine xoay vòng. Mỗi lỗi được map thành 1 `Verdict` cho biết:
   - action     : engine nên LÀM GÌ (xoay key, cho key ngủ, loại key, bỏ request, báo admin...)
@@ -87,15 +87,6 @@ def _contains_any(text: str, hints: tuple[str, ...]) -> bool:
 def classify_error(exc: Exception) -> Verdict:
     raw = _trim(exc)
     text = _msg(exc)
-
-    if exc.__class__.__name__ == "EmbeddingDimensionMismatch":
-        return Verdict(
-            ErrorAction.ABORT_ADMIN,
-            reason="Embedding model trả vector khác chiều với index hiện tại.",
-            notify_admin=True,
-            permanent=True,
-            raw=raw,
-        )
 
     # ---- NHÓM 4: Lỗi REQUEST cấp con của BadRequest (xoay key vô ích) ----------
     if isinstance(exc, litellm.ContextWindowExceededError):
@@ -228,7 +219,7 @@ def classify_error(exc: Exception) -> Verdict:
     if _contains_any(text, ("bad request", "invalid request", "invalid argument", "400")):
         return Verdict(
             ErrorAction.ABORT_ADMIN,
-            reason="Request embedding sai tham số hoặc model không hỗ trợ payload này.",
+            reason="Request LLM sai tham số hoặc model không hỗ trợ payload này.",
             notify_admin=True,
             permanent=True,
             raw=raw,

@@ -6,7 +6,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from app.ai_gateway.base_rotator import RotationResult
-from app.ai_gateway.embedding_rotator import EmbeddingRotator
+from app.ai_gateway.embedding_gemini import EmbeddingRotator
 from app.ai_gateway.llm_rotator import LLMRotator
 from app.ai_gateway.types import (
     AICapability,
@@ -182,7 +182,11 @@ class AIGateway:
                     profile_key["runtime_pools"].append(
                         {
                             "cache_key": list(cache_key),
-                            "pool": rotator.pool.snapshot(),
+                            "pool": (
+                                rotator.pool.snapshot()
+                                if isinstance(rotator, LLMRotator)
+                                else rotator.snapshot()
+                            ),
                         }
                     )
             profiles.append(profile_key)
@@ -222,6 +226,8 @@ class AIGateway:
         tenant_id = context.tenant_id if context else None
         app_id = context.app_id if context else None
         keys = profile.usable_keys(tenant_id=tenant_id, app_id=app_id)
+        if profile.capability == AICapability.EMBEDDING:
+            keys = [key for key in keys if key.provider.strip().lower() == "gemini"][:1]
         if not keys:
             return None
 

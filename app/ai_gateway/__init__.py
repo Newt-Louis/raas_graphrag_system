@@ -1,5 +1,5 @@
 """
-rotation — Engine xoay vòng API key cho LLM & Embedding (multi-provider qua litellm).
+AI Gateway — LLM rotation qua LiteLLM và Gemini embedding chuyên biệt.
 
 Public API:
     from app.ai_gateway import (
@@ -22,7 +22,7 @@ Luồng điển hình:
 """
 
 from app.ai_gateway.base_rotator import AdminAlert, BaseRotator, ProviderCallResult, RotationResult
-from app.ai_gateway.embedding_rotator import EmbeddingDimensionMismatch, EmbeddingRotator
+from app.ai_gateway.embedding_gemini import EmbeddingDimensionMismatch, EmbeddingRotator
 from app.ai_gateway.errors import ErrorAction, Verdict, classify_error
 from app.ai_gateway.gateway import AIGateway
 from app.ai_gateway.key_pool import KeyConfig, KeyPool, KeyState, KeyStatus, PoolExhausted

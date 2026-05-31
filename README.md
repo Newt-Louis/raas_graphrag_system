@@ -103,13 +103,13 @@ http://localhost:5173/platform
 
 Tại `/platform`, cấu hình AI theo thứ tự:
 
-1. Tạo provider.
-2. Nhập API key thật cho provider.
-3. Tạo embedding model profile.
+1. Tạo provider Gemini với `code=gemini` cho embedding.
+2. Nhập một Gemini API key thật.
+3. Tạo một embedding model profile Gemini, ví dụ model `gemini-embedding-001`, và chốt `embedding_dimensions` cho LanceDB index.
 4. Tạo LLM model profile.
 5. Đảm bảo profile/key/provider đang enabled và không bị locked.
 
-Lý do: ingest tài liệu hiện gọi embedding gateway thật để tạo vector và lưu vào LanceDB. Nếu chưa có embedding profile/API key hợp lệ, các route ingest/search/chat sẽ không có model để chạy.
+Lý do: ingest tài liệu hiện gọi Gemini embedding qua package `google-genai` để tạo vector và lưu vào LanceDB. Embedding runtime chỉ hydrate đúng một Gemini profile/API key, không xoay key và không trộn provider/model. LLM vẫn dùng pool xoay vòng riêng qua LiteLLM. Nếu chưa có embedding profile/API key hợp lệ, các route ingest/search/chat sẽ không có model để chạy.
 
 ## Luồng Kiểm Tra Hiện Tại
 
@@ -122,7 +122,7 @@ Lý do: ingest tài liệu hiện gọi embedding gateway thật để tạo vec
    - Hệ thống embed câu hỏi, search LanceDB, trả top matches.
    - Xem similarity, distance, chunk text, metadata và graph context nếu có.
    - Xem bảng embedding health để kiểm tra dimension, số chunk đã embed và chunk thiếu embedding.
-6. Tab `Graph` hiện mới là placeholder; sẽ làm ở bước tiếp theo.
+6. Tab `Graph` hiển thị document/chunk/entity graph từ Kuzu và cho phép lọc, đổi layout, xem chi tiết node/edge.
 
 ## Route Chính
 

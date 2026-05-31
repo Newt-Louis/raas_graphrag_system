@@ -39,12 +39,12 @@ Repo hiện tại đã tách rõ hơn thành các lõi nền tảng:
   - `home.py` và các route `feature1/feature2` trong embed vẫn là placeholder; khi mở rộng, ưu tiên tên domain thật.
 - AI Gateway:
   - Thư mục: `app/ai_gateway/`.
-  - Đã có lõi xoay vòng API qua `AIGateway`, `BaseRotator`, `KeyPool`, `EmbeddingRotator`, `LLMRotator`, `ModelProfile`, `GatewayRequestContext`, `UsageRecord`, và `errors.py`.
+  - Đã có `AIGateway`, `ModelProfile`, `GatewayRequestContext`, `UsageRecord`; LLM dùng `BaseRotator`/`KeyPool`/`LLMRotator`, còn embedding Gemini dùng adapter chuyên biệt `app/ai_gateway/embedding_gemini.py`.
   - Đây là lõi cần hoàn thiện trước để có model embedding/LLM thật phục vụ test GraphRAG.
 - GraphRAG:
   - Thư mục: `app/graphrag/`.
   - `GraphRAGAIClient` đã tồn tại để GraphRAG gọi embedding/LLM qua AI Gateway.
-  - `app/graphrag/vector_database/` chứa pipeline vector database bước đầu: nhận chunk/query ở dạng placeholder/service input, gọi embedding qua `GraphRAGAIClient`/AI Gateway embedding rotator, lưu vector đã tính sẵn vào LanceDB, và query LanceDB để trả match + cosine similarity. Module này chưa phải HTTP route và chưa gọi LLM synthesis.
+  - `app/graphrag/vector_database/` chứa pipeline vector database bước đầu: nhận chunk/query ở dạng placeholder/service input, gọi Gemini embedding qua `GraphRAGAIClient`/AI Gateway, lưu vector đã tính sẵn vào LanceDB, và query LanceDB để trả match + cosine similarity. Module này chưa gọi LLM synthesis.
   - `app/graphrag/graph_database/` lưu cả document structure graph và semantic entity/relation graph trong Kuzu. `ingestion_pipeline.py` hỗ trợ extraction semantic tùy chọn qua LLM gateway; `query_pipeline.py` hỗ trợ chunk context, entity traversal và visualization payload. Community detection/summary vẫn chưa có.
 - Services:
   - `app/services/ingestion/`: document parsing/chunking/deduplication/fanout records.
@@ -129,12 +129,10 @@ Luôn giữ chiều phụ thuộc rõ để tránh trộn trách nhiệm: API ->
 
 - AI Gateway chỉ nhận các `ModelProfile`/`KeyConfig` đã được service/repository nạp vào. Nếu key lưu trong DB thì phải decrypt trước khi đưa vào gateway; gateway không hard-code secret và không log secret.
 - `AIGateway` là facade duy nhất cho GraphRAG/Services gọi model. Tránh để GraphRAG hoặc router gọi trực tiếp `litellm`, `EmbeddingRotator`, hoặc `LLMRotator` nếu không phải test cấp thấp.
-- `BaseRotator` giữ logic chung: acquire key, gọi subclass, classify error, retry same key, rotate key, cooldown, disable, abort/admin notify, và trả `RotationResult`.
-- `errors.py` là bảng quyết định trung tâm cho lỗi provider/litellm. Khi thêm provider/model mới, ưu tiên mở rộng classify error tại đây thay vì rải logic try/except trong từng service.
-- `KeyPool` là runtime pool tách khỏi DB. Trạng thái DB/Redis về quota, cooldown, disabled, usage, endpoint lock sẽ được map vào/ra pool bởi service/repository riêng.
-- Phải tách 2 loại pool/rotator:
-  - **Embedding AI API pool**: dùng cho embedding document chunks và embedding query. Dùng `EmbeddingRotator`. Phải ràng buộc model/dimension/index profile rõ ràng; không được xoay sang model embedding khác chiều với LanceDB/vector index đang dùng. Hỗ trợ batch input và batch-size theo provider.
-  - **LLM AI API pool**: dùng cho sinh câu trả lời, synthesis, reranking LLM nếu có, tool/structured output nếu sau này cần. Dùng `LLMRotator`. Quản lý generation params như temperature, max tokens, timeout, streaming/tool calling theo request/profile.
+- `BaseRotator`, `KeyPool` và `errors.py` chỉ phục vụ LLM qua LiteLLM: acquire key, classify error, retry same key, rotate key, cooldown, disable, abort/admin notify, và trả `RotationResult`.
+- Phải tách 2 cơ chế runtime:
+  - **Gemini embedding adapter**: dùng `app/ai_gateway/embedding_gemini.py` và package `google-genai`, chỉ hydrate đúng một Gemini profile/API key, không xoay key, không trộn provider/model. Embed document phải gửi `RETRIEVAL_DOCUMENT`; embed query phải gửi `RETRIEVAL_QUERY`. Model và dimension của index LanceDB phải giữ cố định.
+  - **LLM AI API pool**: dùng `LLMRotator` qua LiteLLM cho sinh câu trả lời, synthesis, reranking LLM nếu có, tool/structured output nếu sau này cần. Quản lý generation params như temperature, max tokens, timeout, streaming/tool calling theo request/profile.
 - Không trộn key embedding và key LLM trong cùng một pool. Một provider có thể có cả embedding và LLM key, nhưng runtime profile phải tách theo `capability`/`model_type`: `embedding` hoặc `llm`.
 - DB model hiện đã tách `llm_rotation_pools`/`llm_model_profiles` và `embedding_rotation_pools`/`embedding_model_profiles`; khi thêm API/admin, không gộp hai nhóm này lại vì cấu hình và rủi ro khác nhau.
 - Quota/usage cần được ghi theo tối thiểu: provider, key_id, model, capability, tenant/app nếu request có scope, endpoint, input/token count nếu có, latency, success/error verdict.
@@ -172,8 +170,8 @@ Hiện tại retrieval service đang vector-only:
 - `app/services/vector/embeddings.py` có `HashingTextEmbeddingService` để dev/test không cần secret. Đây không phải embedding production.
 - `app/services/vector/store.py` có `LanceDBVectorStore` và `InMemoryVectorStore`.
 - `app/services/retrieval/orchestrator.py` là điểm hứng retrieval trước khi synthesis. Chat API nên gọi orchestrator/service, không gọi thẳng LanceDB.
-- `app/graphrag/vector_database/` là luồng GraphRAG-facing mới cho LanceDB với provider embedding thật: `GraphRAGVectorDatabasePipeline.ingest()` gọi AI Gateway embedding rotator để embed document chunks rồi lưu vào LanceDB; `query()` embed query rồi tìm trong LanceDB và trả `VectorMatch` gồm `similarity`, `distance`, `document_id`, `chunk_id`, text và metadata. Luồng này dùng `settings.LANCEDB_PATH` và `settings.VECTOR_INDEX_TABLE` qua factory, không tự chọn provider/key và không gọi LLM.
-- Route `POST /api/v1/ingest` hiện parse/chunk tài liệu rồi gọi `app/graphrag/vector_database/` để embed qua embedding rotation pool hydrate từ PostgreSQL trước khi lưu LanceDB; không còn dùng hashing local cho đường ingest route chính. Route `POST /api/v1/ingest/query` embed query qua cùng embedding gateway rồi search LanceDB để trả cosine similarity, chưa gọi LLM synthesis.
+- `app/graphrag/vector_database/` là luồng GraphRAG-facing mới cho LanceDB với Gemini embedding thật: `GraphRAGVectorDatabasePipeline.ingest()` gọi AI Gateway Gemini adapter để embed document chunks rồi lưu vào LanceDB; `query()` embed query bằng cùng Gemini profile rồi tìm trong LanceDB và trả `VectorMatch` gồm `similarity`, `distance`, `document_id`, `chunk_id`, text và metadata. Luồng này dùng `settings.LANCEDB_PATH` và `settings.VECTOR_INDEX_TABLE` qua factory, không gọi LLM.
+- Route `POST /api/v1/ingest` hiện parse/chunk tài liệu rồi gọi `app/graphrag/vector_database/` để embed qua một Gemini embedding profile hydrate từ PostgreSQL trước khi lưu LanceDB; không còn dùng hashing local cho đường ingest route chính. Route `POST /api/v1/ingest/query` embed query qua cùng Gemini gateway rồi search LanceDB để trả cosine similarity, chưa gọi LLM synthesis.
 - Khi chuyển sang embedding provider thật, ingest embedding và query embedding phải dùng cùng embedding profile hoặc profile tương thích dimension với index.
 - Khi thêm GraphDB/Kuzu retrieval, mở rộng orchestrator để hợp nhất kết quả vector + graph, rerank, và trả citation/source metadata. Không bẻ chat API sang gọi trực tiếp hai DB.
 
@@ -321,7 +319,7 @@ Mục này ghi lại trạng thái mới nhất sau phiên làm việc ngày 29/
 - AI Gateway:
   - Có runtime hydrate embedding gateway từ PostgreSQL qua `app/services/ai_gateway_runtime.py`.
   - Có runtime hydrate LLM gateway từ PostgreSQL qua `build_llm_gateway()`. Runtime facade `runtime-llm-pool` chỉ dùng để xoay key/profile; lời gọi thành công vẫn ghi UUID masterdata từ `llm_model_profiles.id`.
-  - Embedding gateway có thể dùng facade `runtime-embedding-pool` để xoay nhiều profile tương thích dimension, nhưng mỗi `KeyConfig` phải giữ `model_profile_id` là UUID từ `embedding_model_profiles.id`. Khi gọi thành công, `RotationResult.profile_id`, usage event và vector record ghi vào LanceDB phải dùng UUID masterdata của profile thực sự đã được chọn, không ghi id facade runtime.
+  - Embedding gateway dùng facade `runtime-embedding-pool` nhưng chỉ hydrate đúng một Gemini profile/API key. `KeyConfig.model_profile_id` phải giữ UUID từ `embedding_model_profiles.id`; khi gọi thành công, `RotationResult.profile_id`, usage event và vector record ghi vào LanceDB dùng UUID masterdata này, không ghi id facade runtime.
   - `BaseRotator` không còn trả lỗi mơ hồ kiểu `Vượt quá max_attempts=...`; khi hết lượt thử sẽ trả lỗi cuối của provider/model/key đã được phân loại và redact secret.
   - `errors.py` đã bổ sung heuristic cho các lỗi 400/401/404 bị LiteLLM bọc trong `APIError` để không retry/rotate vô ích.
 - Ingestion + Vector DB:

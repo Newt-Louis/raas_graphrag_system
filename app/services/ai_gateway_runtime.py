@@ -44,25 +44,18 @@ def build_embedding_gateway(
             continue
         if not _is_runtime_row_usable(pool, provider, api_key, capability=AICapability.EMBEDDING):
             continue
-
-        if expected_dim is None:
-            expected_dim = profile.embedding_dimensions
-        elif profile.embedding_dimensions is not None and profile.embedding_dimensions != expected_dim:
+        if not _is_gemini_embedding_provider(provider):
             continue
 
-        if max_batch_size is None:
-            max_batch_size = profile.batch_size
-        if not default_params:
-            default_params = {
-                "timeout": profile.timeout_seconds,
-                **(profile.extra_parameters or {}),
-            }
+        expected_dim = profile.embedding_dimensions
+        max_batch_size = profile.batch_size
+        default_params = dict(profile.extra_parameters or {})
 
         keys.append(
             KeyConfig(
                 id=str(api_key.id),
                 provider=provider.code,
-                model_name=_litellm_model_name(provider, profile.model_name),
+                model_name=_gemini_embedding_model_name(profile.model_name),
                 api_key=decrypt_secret(api_key.encrypted_api_key),
                 capability=AICapability.EMBEDDING.value,
                 model_profile_id=str(profile.id),
@@ -75,10 +68,10 @@ def build_embedding_gateway(
                 extra={
                     **(profile.extra_parameters or {}),
                     **({"embedding_batch_size": profile.batch_size} if profile.batch_size else {}),
-                    **_provider_override(provider),
                 },
             )
         )
+        break
 
     if not keys:
         raise AIGatewayRuntimeError("No usable embedding model profile is available for this scope.")
@@ -261,6 +254,19 @@ def _provider_override(provider: AIProvider) -> dict:
     provider_config = provider.provider_config or {}
     litellm_provider = provider_config.get("litellm_provider") or provider_config.get("custom_llm_provider")
     return {"custom_llm_provider": str(litellm_provider)} if litellm_provider else {}
+
+
+def _is_gemini_embedding_provider(provider: AIProvider) -> bool:
+    return str(provider.code or "").strip().lower() == "gemini"
+
+
+def _gemini_embedding_model_name(model_name: str) -> str:
+    clean_model_name = str(model_name or "").strip().lstrip("/")
+    if clean_model_name.startswith("models/"):
+        clean_model_name = clean_model_name.removeprefix("models/")
+    if clean_model_name.startswith("gemini/"):
+        clean_model_name = clean_model_name.removeprefix("gemini/")
+    return clean_model_name
 
 
 def _litellm_model_name(provider: AIProvider, model_name: str) -> str:

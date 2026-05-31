@@ -1,11 +1,11 @@
 """
-base_rotator.py — Vòng lặp xoay vòng chung cho MỌI loại model (LLM, embedding...).
+base_rotator.py — Vòng lặp xoay vòng API key dành cho LLM.
 
 Tách bạch 2 trách nhiệm:
-  - BaseRotator   : LOGIC xoay vòng + áp dụng Verdict (không biết gì về litellm call cụ thể)
-  - subclass._call: CÁCH gọi API thật (LLM dùng acompletion, embedding dùng aembedding)
+  - BaseRotator   : LOGIC xoay vòng + áp dụng Verdict
+  - LLMRotator._call: CÁCH gọi API thật qua litellm acompletion
 
-Subclass chỉ cần override `_call(key, **kwargs) -> Any`.
+Subclass LLM chỉ cần override `_call(key, **kwargs) -> Any`.
 Toàn bộ xử lý lỗi/xoay/cooldown/abort đã nằm ở đây.
 """
 
@@ -113,7 +113,7 @@ class BaseRotator(abc.ABC):
     async def _call(self, key: KeyState, **kwargs) -> Any:
         """
         Gọi API thật với 1 key cụ thể, trả về dữ liệu đã parse.
-        Ném litellm exception nếu lỗi — BaseRotator sẽ bắt và phân loại.
+        Ném litellm exception nếu lỗi LLM — BaseRotator sẽ bắt và phân loại.
         """
         ...
 

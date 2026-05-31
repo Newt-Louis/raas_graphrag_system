@@ -27,6 +27,7 @@ class GraphRAGAIClient:
         expected_dim: int | None = None,
         **overrides: Any,
     ) -> RotationResult:
+        overrides.setdefault("task_type", "RETRIEVAL_DOCUMENT")
         return await self.gateway.embed(
             texts,
             profile_id=profile_id,
@@ -51,6 +52,7 @@ class GraphRAGAIClient:
         expected_dim: int | None = None,
         **overrides: Any,
     ) -> RotationResult:
+        overrides.setdefault("task_type", "RETRIEVAL_QUERY")
         return await self.gateway.embed(
             [query],
             profile_id=profile_id,
