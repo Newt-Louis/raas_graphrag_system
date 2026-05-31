@@ -160,41 +160,6 @@ class LLMModelProfile(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
 
 
-class EmbeddingRotationPool(UUIDPrimaryKeyMixin, TimestampMixin, Base):
-    __tablename__ = "embedding_rotation_pools"
-    __table_args__ = (
-        UniqueConstraint("profile_id", name="uq_embedding_rotation_pools_profile"),
-        Index("ix_embedding_rotation_pools_scope_default", "tenant_id", "app_id", "is_default"),
-        Index("ix_embedding_rotation_pools_order", "rotation_order"),
-        Index("ix_embedding_rotation_pools_current", "current_position"),
-        Index("ix_embedding_rotation_pools_enabled_locked", "is_enabled", "is_locked"),
-        Index("ix_embedding_rotation_pools_quota_cooldown", "today_quota_exhausted", "rate_limited_until"),
-    )
-
-    tenant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"))
-    app_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("customer_apps.id", ondelete="CASCADE"))
-    profile_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("embedding_model_profiles.id", ondelete="CASCADE"), nullable=False)
-    name: Mapped[str] = mapped_column(String(120), nullable=False, default="default")
-    is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    current_position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    rotation_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    weight: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
-    is_locked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    lock_reason: Mapped[str | None] = mapped_column(Text)
-    today_quota_exhausted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    quota_exhausted_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    rate_limited_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    daily_request_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    minute_request_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    success_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    failure_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    description: Mapped[str | None] = mapped_column(Text)
-
-    profile: Mapped["EmbeddingModelProfile"] = relationship(back_populates="pool_state")
-
-
 class EmbeddingModelProfile(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "embedding_model_profiles"
 
@@ -211,13 +176,6 @@ class EmbeddingModelProfile(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     timeout_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=60)
     cost_per_1k_tokens: Mapped[Decimal | None] = mapped_column(Numeric(12, 8))
     extra_parameters: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
-
-    pool_state: Mapped["EmbeddingRotationPool | None"] = relationship(
-        back_populates="profile",
-        cascade="all, delete-orphan",
-        single_parent=True,
-    )
-
 
 class AIUsageEvent(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "ai_usage_events"

@@ -109,7 +109,7 @@ class EmbeddingRotator:
                 batch = normalized_inputs[start:start + batch_size]
                 response = await async_client.models.embed_content(
                     model=_gemini_model_name(self.key.model_name),
-                    contents=batch,
+                    contents=[_content_for_gemini_embedding(text) for text in batch],
                     config=config,
                 )
                 vectors.extend(self._extract(response, expected_n=len(batch)))
@@ -190,6 +190,13 @@ def _text_for_gemini_embedding(value: Any) -> str:
         if text_parts:
             return "\n".join(text_parts)
     raise ValueError("Gemini embedding hiện chỉ hỗ trợ input có nội dung text không rỗng.")
+
+
+def _content_for_gemini_embedding(text: str) -> types.Content:
+    # google-genai normalizes list[str] as parts of one Content for
+    # gemini-embedding-2. Keep chunks as separate Content objects so each one
+    # receives its own vector.
+    return types.Content(parts=[types.Part(text=text)])
 
 
 def _embedding_error_reason(exc: Exception) -> str:

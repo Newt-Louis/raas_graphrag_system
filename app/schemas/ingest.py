@@ -19,7 +19,6 @@ class DocumentIngestResponse(BaseModel):
     chunk_strategy: ChunkStrategy
     stats: dict[str, int]
     feed_targets: list[str] = Field(default_factory=lambda: ["graph", "vector"])
-    embedding_profile_id: str | None = None
     embedding_model: str | None = None
     vector_table: str | None = None
     vector_stored_count: int = 0
@@ -43,8 +42,6 @@ class VectorDatabaseQueryRequest(BaseModel):
     query: str = Field(min_length=1)
     top_k: int = Field(default=5, ge=1, le=50)
     min_similarity: float = Field(default=0.0, ge=0.0, le=1.0)
-    embedding_profile_id: str | None = None
-    expected_dim: int | None = Field(default=None, ge=1)
 
 
 class VectorDatabaseMatchResponse(BaseModel):
@@ -83,7 +80,6 @@ class VectorDatabaseQueryResponse(BaseModel):
     app_id: str
     collection_id: str | None = None
     vector_table: str
-    embedding_profile_id: str | None = None
     embedding_model: str | None = None
     matches: list[VectorDatabaseMatchResponse]
     graph_context: list[GraphChunkContextResponse] = Field(default_factory=list)

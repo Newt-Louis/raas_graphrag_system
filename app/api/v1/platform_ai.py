@@ -20,8 +20,6 @@ from app.schemas.ai_gateway import (
     EmbeddingModelProfileCreate,
     EmbeddingModelProfileResponse,
     EmbeddingModelProfileUpdate,
-    EmbeddingRotationPoolCreate,
-    EmbeddingRotationPoolResponse,
     LLMModelProfileCreate,
     LLMModelProfileResponse,
     LLMModelProfileUpdate,
@@ -162,23 +160,6 @@ def delete_llm_model_profile(
 ):
     _run_service(lambda: service.delete_llm_profile(profile_id))
     return None
-
-
-@router.get("/embedding/rotation-pools", response_model=list[EmbeddingRotationPoolResponse])
-def list_embedding_rotation_pools(service: AIAdminService = Depends(get_ai_admin_service)):
-    return _run_service(service.list_embedding_pools)
-
-
-@router.post(
-    "/embedding/rotation-pools",
-    response_model=EmbeddingRotationPoolResponse,
-    status_code=status.HTTP_201_CREATED,
-)
-def create_embedding_rotation_pool(
-    payload: EmbeddingRotationPoolCreate,
-    service: AIAdminService = Depends(get_ai_admin_service),
-):
-    return _run_service(lambda: service.create_embedding_pool(payload))
 
 
 @router.get("/embedding/model-profiles", response_model=list[EmbeddingModelProfileResponse])

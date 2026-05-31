@@ -4,6 +4,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from google.genai import types
+
 from app.ai_gateway import AICapability, AIGateway, GatewayRequestContext, KeyConfig, ModelProfile
 from app.ai_gateway.embedding_gemini import EmbeddingRotator
 from app.graphrag.ai_client import GraphRAGAIClient
@@ -48,6 +50,10 @@ class RecordingGateway:
     async def embed(self, inputs, **kwargs):
         self.calls.append({"inputs": inputs, **kwargs})
         return SimpleNamespace(success=True)
+
+
+def _content_texts(contents: list[types.Content]) -> list[str]:
+    return [content.parts[0].text for content in contents]
 
 
 class GeminiEmbeddingTests(unittest.IsolatedAsyncioTestCase):
@@ -122,7 +128,38 @@ class GeminiEmbeddingTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertTrue(result.success)
-        self.assertEqual(models.calls[0]["contents"], ["Represent invoice image."])
+        self.assertEqual(_content_texts(models.calls[0]["contents"]), ["Represent invoice image."])
+
+    async def test_keeps_gemini_embedding_2_batch_items_as_separate_contents(self) -> None:
+        models = FakeAsyncModels(
+            [
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+                [1.0, 1.0, 0.0],
+            ]
+        )
+        rotator = EmbeddingRotator(
+            [
+                KeyConfig(
+                    id="gemini-key",
+                    provider="gemini",
+                    model_name="gemini-embedding-2",
+                    api_key="secret",
+                )
+            ],
+            expected_dim=3,
+            max_batch_size=32,
+        )
+
+        with patch("app.ai_gateway.embedding_gemini.genai.Client", return_value=FakeClient(models)):
+            result = await rotator.run(inputs=["one", "two", "three", "four"])
+
+        self.assertTrue(result.success)
+        self.assertEqual(len(result.data), 4)
+        contents = models.calls[0]["contents"]
+        self.assertTrue(all(isinstance(content, types.Content) for content in contents))
+        self.assertEqual(_content_texts(contents), ["one", "two", "three", "four"])
 
     def test_rejects_multiple_embedding_keys(self) -> None:
         keys = [

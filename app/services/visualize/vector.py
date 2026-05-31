@@ -4,8 +4,6 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
-from uuid import UUID
-
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -65,19 +63,10 @@ class VectorVisualizationService:
             app_id=payload.app_id,
             collection_id=payload.collection_id,
         )
-        inferred_profile_id, inferred_dim = self._indexed_embedding_hint(scope)
-        requested_profile_id = payload.embedding_profile_id or inferred_profile_id
-        profile_id = _uuid_or_none(requested_profile_id)
-        if payload.embedding_profile_id and profile_id is None:
-            raise VisualizeInputError("Invalid embedding_profile_id.")
-
         pipeline = GraphRAGVectorDatabasePipeline(
             ai_client=GraphRAGAIClient(
                 build_embedding_gateway(
                     self.db,
-                    tenant_id=payload.tenant_id,
-                    app_id=payload.app_id,
-                    profile_id=profile_id,
                     rotator_options={
                         "max_attempts": 3,
                         "max_retry_same": 0,
@@ -93,8 +82,6 @@ class VectorVisualizationService:
                 query=payload.query,
                 top_k=payload.top_k,
                 min_similarity=payload.min_similarity,
-                embedding_profile_id=str(profile_id) if profile_id else None,
-                expected_dim=payload.expected_dim or inferred_dim,
             )
         )
         graph_context = self._graph_context_by_chunk_id(
@@ -109,7 +96,6 @@ class VectorVisualizationService:
             app_id=result.app_id,
             collection_id=result.collection_id,
             vector_table=result.table_name,
-            embedding_profile_id=result.embedding_profile_id,
             embedding_model=result.embedding_model,
             top_k=payload.top_k,
             min_similarity=payload.min_similarity,
@@ -129,23 +115,6 @@ class VectorVisualizationService:
                 for index, match in enumerate(result.matches, start=1)
             ],
         )
-
-    def _indexed_embedding_hint(self, scope: VectorDatabaseScope) -> tuple[str | None, int | None]:
-        records = self.vector_store.list_records(scope=scope, limit=1_000)
-        if not records:
-            return None, None
-
-        profile_counts: dict[str, int] = {}
-        dimension_counts: dict[int, int] = {}
-        for record in records:
-            if record.embedding_profile_id:
-                profile_counts[record.embedding_profile_id] = profile_counts.get(record.embedding_profile_id, 0) + 1
-            if record.vector_dimension:
-                dimension_counts[record.vector_dimension] = dimension_counts.get(record.vector_dimension, 0) + 1
-
-        profile_id = max(profile_counts, key=profile_counts.get) if profile_counts else None
-        dimension = max(dimension_counts, key=dimension_counts.get) if dimension_counts else None
-        return profile_id, dimension
 
     def embedding_health(self, payload: VectorHealthRequest) -> VectorEmbeddingProfileHealthResponse:
         scope = VectorDatabaseScope(
@@ -217,7 +186,7 @@ class VectorVisualizationService:
         documents.sort(
             key=lambda item: (
                 item.document_id,
-                item.embedding_profile_id or "",
+                item.embedding_profile_name or "",
                 item.embedding_model or "",
                 item.vector_dimension or 0,
             )
@@ -256,7 +225,6 @@ class VectorVisualizationService:
         return VectorEmbeddingProfileHealthItem(
             document_id=document_id,
             collection_id=collection_id or _metadata_value(records, "collection_id"),
-            embedding_profile_id=embedding_profile_id,
             embedding_profile_name=profile.profile_name if profile else None,
             embedding_model=embedding_model or (profile.model_name if profile else None),
             embedding_dimension=embedding_dimension,
@@ -388,15 +356,6 @@ class VectorVisualizationService:
             )
         except KuzuGraphStoreError:
             return {}
-
-
-def _uuid_or_none(value: str | UUID | None) -> UUID | None:
-    if not value:
-        return None
-    try:
-        return value if isinstance(value, UUID) else UUID(str(value))
-    except ValueError:
-        return None
 
 
 def _dimension_status(embedding_dimension: int | None, vector_dimension: int | None) -> str:

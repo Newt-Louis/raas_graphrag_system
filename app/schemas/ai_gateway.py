@@ -198,34 +198,7 @@ class LLMModelProfileResponse(LLMModelProfileBase):
     updated_at: datetime
 
 
-class EmbeddingRotationPoolCreate(BaseModel):
-    tenant_id: UUID | None = None
-    app_id: UUID | None = None
-    profile_id: UUID
-    name: str = Field(default="default", min_length=1, max_length=120)
-    is_default: bool = False
-    is_enabled: bool = True
-    current_position: int = Field(default=0, ge=0)
-    rotation_order: int = Field(default=0, ge=0)
-    weight: int = Field(default=1, ge=1)
-    is_locked: bool = False
-    lock_reason: str | None = None
-    today_quota_exhausted: bool = False
-    daily_request_count: int = Field(default=0, ge=0)
-    minute_request_count: int = Field(default=0, ge=0)
-    description: str | None = None
-
-
-class EmbeddingRotationPoolResponse(EmbeddingRotationPoolCreate):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: UUID
-    created_at: datetime
-    updated_at: datetime
-
-
 class EmbeddingModelProfileBase(BaseModel):
-    pool_id: UUID | None = None
     provider_id: UUID | None = None
     api_key_id: UUID | None = None
     model_id: UUID | None = None
@@ -233,14 +206,6 @@ class EmbeddingModelProfileBase(BaseModel):
     model_name: str = Field(min_length=1, max_length=255)
     api_base: str | None = None
     endpoint_id: str | None = Field(default=None, max_length=120)
-    rotation_order: int = Field(default=0, ge=0)
-    weight: int = Field(default=1, ge=1)
-    is_enabled: bool = True
-    is_locked: bool = False
-    lock_reason: str | None = None
-    today_quota_exhausted: bool = False
-    daily_request_count: int = Field(default=0, ge=0)
-    minute_request_count: int = Field(default=0, ge=0)
     embedding_dimensions: int | None = Field(default=None, ge=1)
     batch_size: int | None = Field(default=None, ge=1)
     retrieval_top_k: int | None = Field(default=None, ge=1)
@@ -254,7 +219,6 @@ class EmbeddingModelProfileCreate(EmbeddingModelProfileBase):
 
 
 class EmbeddingModelProfileUpdate(BaseModel):
-    pool_id: UUID | None = None
     provider_id: UUID | None = None
     api_key_id: UUID | None = None
     model_id: UUID | None = None
@@ -262,14 +226,6 @@ class EmbeddingModelProfileUpdate(BaseModel):
     model_name: str | None = Field(default=None, min_length=1, max_length=255)
     api_base: str | None = None
     endpoint_id: str | None = Field(default=None, max_length=120)
-    rotation_order: int | None = Field(default=None, ge=0)
-    weight: int | None = Field(default=None, ge=1)
-    is_enabled: bool | None = None
-    is_locked: bool | None = None
-    lock_reason: str | None = None
-    today_quota_exhausted: bool | None = None
-    daily_request_count: int | None = Field(default=None, ge=0)
-    minute_request_count: int | None = Field(default=None, ge=0)
     embedding_dimensions: int | None = Field(default=None, ge=1)
     batch_size: int | None = Field(default=None, ge=1)
     retrieval_top_k: int | None = Field(default=None, ge=1)

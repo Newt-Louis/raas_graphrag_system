@@ -4,7 +4,6 @@ from app.models.ai_gateway import (
     AIProvider,
     AIUsageEvent,
     EmbeddingModelProfile,
-    EmbeddingRotationPool,
     LLMModelProfile,
     LLMRotationPool,
 )
@@ -20,7 +19,6 @@ __all__ = [
     "Document",
     "DocumentIngestionJob",
     "EmbeddingModelProfile",
-    "EmbeddingRotationPool",
     "LLMModelProfile",
     "LLMRotationPool",
     "PlatformUser",

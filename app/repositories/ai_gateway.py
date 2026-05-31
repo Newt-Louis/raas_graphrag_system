@@ -11,7 +11,6 @@ from app.models.ai_gateway import (
     AIModelCatalog,
     AIProvider,
     EmbeddingModelProfile,
-    EmbeddingRotationPool,
     LLMModelProfile,
     LLMRotationPool,
 )
@@ -144,32 +143,9 @@ class AIAdminRepository:
         self.db.delete(profile)
         self.db.flush()
 
-    def list_embedding_pools(self) -> Sequence[EmbeddingRotationPool]:
+    def list_embedding_profiles(self) -> Sequence[EmbeddingModelProfile]:
         return self.db.scalars(
-            select(EmbeddingRotationPool).order_by(EmbeddingRotationPool.rotation_order, EmbeddingRotationPool.name)
-        ).all()
-
-    def get_embedding_pool(self, pool_id: UUID) -> EmbeddingRotationPool | None:
-        return self.db.get(EmbeddingRotationPool, pool_id)
-
-    def get_embedding_pool_by_profile(self, profile_id: UUID) -> EmbeddingRotationPool | None:
-        return self.db.scalars(select(EmbeddingRotationPool).where(EmbeddingRotationPool.profile_id == profile_id)).first()
-
-    def create_embedding_pool(self, values: dict) -> EmbeddingRotationPool:
-        pool = EmbeddingRotationPool(**values)
-        self.db.add(pool)
-        self.db.flush()
-        self.db.refresh(pool)
-        return pool
-
-    def list_embedding_profiles(self) -> Sequence[EmbeddingRotationPool]:
-        return self.db.scalars(
-            select(EmbeddingRotationPool)
-            .join(EmbeddingRotationPool.profile)
-            .order_by(
-                EmbeddingRotationPool.rotation_order,
-                EmbeddingModelProfile.profile_name,
-            )
+            select(EmbeddingModelProfile).order_by(EmbeddingModelProfile.created_at.desc())
         ).all()
 
     def get_embedding_profile(self, profile_id: UUID) -> EmbeddingModelProfile | None:
@@ -192,17 +168,6 @@ class AIAdminRepository:
         self.db.flush()
         self.db.refresh(profile)
         return profile
-
-    def update_embedding_pool(
-        self,
-        pool: EmbeddingRotationPool,
-        values: dict,
-    ) -> EmbeddingRotationPool:
-        for key, value in values.items():
-            setattr(pool, key, value)
-        self.db.flush()
-        self.db.refresh(pool)
-        return pool
 
     def delete_embedding_profile(self, profile: EmbeddingModelProfile) -> None:
         self.db.delete(profile)

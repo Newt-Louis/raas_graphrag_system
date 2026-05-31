@@ -54,7 +54,7 @@ Repo hiện tại đã tách rõ hơn thành các lõi nền tảng:
   - `app/db/base.py`, `app/db/session.py`: SQLAlchemy base/session.
   - `app/models/platform.py`: platform users, tenants, customer apps.
   - `app/models/documents.py`: documents và ingestion jobs.
-  - `app/models/ai_gateway.py`: provider, API key, model catalog, LLM rotation pools/profiles, embedding rotation pools/profiles, usage events.
+  - `app/models/ai_gateway.py`: provider, API key, model catalog, LLM rotation pools/profiles, embedding profiles, usage events.
   - Chưa thấy migration Alembic hoàn chỉnh tương ứng với toàn bộ model mới; nếu thêm/sửa DB schema thì cần xử lý migration thay vì chỉ sửa model.
 - Core:
   - `app/core/config.py` đã có config DB, path runtime, LanceDB/vector, embedding local, CORS.
@@ -134,7 +134,7 @@ Luôn giữ chiều phụ thuộc rõ để tránh trộn trách nhiệm: API ->
   - **Gemini embedding adapter**: dùng `app/ai_gateway/embedding_gemini.py` và package `google-genai`, chỉ hydrate đúng một Gemini profile/API key, không xoay key, không trộn provider/model. Embed document phải gửi `RETRIEVAL_DOCUMENT`; embed query phải gửi `RETRIEVAL_QUERY`. Model và dimension của index LanceDB phải giữ cố định.
   - **LLM AI API pool**: dùng `LLMRotator` qua LiteLLM cho sinh câu trả lời, synthesis, reranking LLM nếu có, tool/structured output nếu sau này cần. Quản lý generation params như temperature, max tokens, timeout, streaming/tool calling theo request/profile.
 - Không trộn key embedding và key LLM trong cùng một pool. Một provider có thể có cả embedding và LLM key, nhưng runtime profile phải tách theo `capability`/`model_type`: `embedding` hoặc `llm`.
-- DB model hiện đã tách `llm_rotation_pools`/`llm_model_profiles` và `embedding_rotation_pools`/`embedding_model_profiles`; khi thêm API/admin, không gộp hai nhóm này lại vì cấu hình và rủi ro khác nhau.
+- DB model chỉ giữ `llm_rotation_pools` cho LLM. Embedding không có rotation pool; runtime đọc trực tiếp record `embedding_model_profiles` mới nhất theo `created_at`.
 - Quota/usage cần được ghi theo tối thiểu: provider, key_id, model, capability, tenant/app nếu request có scope, endpoint, input/token count nếu có, latency, success/error verdict.
 - Endpoint/model lock là chính sách của Platform Admin: admin có thể khóa provider, key, model, endpoint, capability, hoặc tenant/app mapping. Gateway phải tôn trọng lock trước khi acquire key.
 - Nếu gặp lỗi cấu hình cần admin can thiệp, gateway phải nổi lên platform admin dashboard thay vì âm thầm retry vô hạn.
@@ -181,7 +181,7 @@ Platform Admin UI/API là nơi vận hành nội bộ của GraphRAG-as-a-Servic
 
 - Quản lý provider/model catalog theo `capability`: `embedding` và `llm`.
 - Quản lý encrypted API keys, trạng thái active/cooldown/disabled, quota, endpoint/model lock, allowed tenant/app mapping.
-- Quản lý LLM rotation pools và embedding rotation pools tách biệt, có default pool theo platform/tenant/app.
+- Quản lý LLM rotation pools theo platform/tenant/app; embedding dùng trực tiếp profile Gemini mới nhất và không có rotation pool.
 - Xem usage, latency, success/fail, verdict/reason, key health snapshot, và cảnh báo cần admin xử lý.
 - Test call riêng cho embedding và LLM để xác minh key/model trước khi dùng cho ingestion/chat.
 - Cấu hình default model profile cho ingestion embedding, query embedding, chat synthesis, và các tác vụ phụ như rerank nếu có.
@@ -195,7 +195,7 @@ Hiện trạng Platform Admin AI UI:
 - `ui/src/pages/admin_system/ModelProfilesPage.vue` là trang quản lý LLM model profile hiện tại; không dựng form riêng để admin tự tạo pool runtime thủ công trên UI nếu chưa có thiết kế rõ.
 - Raw provider API key phải lưu qua bảng `ai_api_keys` bằng backend API, backend hash key vào `key_hash`, encrypt key vào `encrypted_api_key`, và frontend chỉ được nhận preview đã mask.
 - Không nhập raw API key vào `llm_model_profiles.api_key_id`. Cột `api_key_id` trong `llm_model_profiles` là khóa ngoại tới `ai_api_keys.id`; `provider_id` là khóa ngoại tới `ai_providers.id`.
-- Từ migration `202605250001`, model profile và pool runtime đã tách lớp nhưng không thêm bảng entry: `llm_model_profiles`/`embedding_model_profiles` chỉ giữ cấu hình masterdata của model/key/provider; `llm_rotation_pools`/`embedding_rotation_pools` là bảng runtime trực tiếp, mỗi dòng pool trỏ tới một profile qua `profile_id` và giữ `rotation_order`, `weight`, `current_position`, `is_enabled`, `is_locked`, `lock_reason`, `today_quota_exhausted`, `quota_exhausted_until`, `rate_limited_until`, `last_used_at`, `daily_request_count`, `minute_request_count`, `success_count`, `failure_count`.
+- Từ migration `202605310001`, bảng `embedding_rotation_pools` đã bị xóa. `embedding_model_profiles` là cấu hình trực tiếp cho Gemini embedding; record mới nhất theo `created_at` được dùng mặc định. `llm_rotation_pools` vẫn là runtime rows cho LLM.
 - `current_position` trong bảng pool là marker 0/1 cho biết dòng runtime nào đang tới lượt gọi tiếp theo; vòng xoay đi theo `rotation_order`.
 - Redis runtime sau này hydrate từ các bảng `*_rotation_pools` join sang `*_model_profiles`. Khi cooldown/quota hết hạn hoặc Redis bị flush/restart, worker/lifespan/service cần rehydrate hoặc reconcile Redis từ PostgreSQL theo bảng pool runtime.
 - `status` trên danh sách model profile/API key/provider chỉ là trạng thái vận hành để hiển thị active/disabled/locked/cooldown; thao tác đổi trạng thái phải đi qua nút action và endpoint backend, không biến status thành ô chọn tự do trong bảng.
@@ -319,7 +319,7 @@ Mục này ghi lại trạng thái mới nhất sau phiên làm việc ngày 29/
 - AI Gateway:
   - Có runtime hydrate embedding gateway từ PostgreSQL qua `app/services/ai_gateway_runtime.py`.
   - Có runtime hydrate LLM gateway từ PostgreSQL qua `build_llm_gateway()`. Runtime facade `runtime-llm-pool` chỉ dùng để xoay key/profile; lời gọi thành công vẫn ghi UUID masterdata từ `llm_model_profiles.id`.
-  - Embedding gateway dùng facade `runtime-embedding-pool` nhưng chỉ hydrate đúng một Gemini profile/API key. `KeyConfig.model_profile_id` phải giữ UUID từ `embedding_model_profiles.id`; khi gọi thành công, `RotationResult.profile_id`, usage event và vector record ghi vào LanceDB dùng UUID masterdata này, không ghi id facade runtime.
+  - Embedding gateway hydrate trực tiếp record `embedding_model_profiles` mới nhất theo `created_at`, chỉ dùng đúng một Gemini API key. `KeyConfig.model_profile_id`, `RotationResult.profile_id`, usage event và vector record ghi vào LanceDB dùng UUID masterdata này.
   - `BaseRotator` không còn trả lỗi mơ hồ kiểu `Vượt quá max_attempts=...`; khi hết lượt thử sẽ trả lỗi cuối của provider/model/key đã được phân loại và redact secret.
   - `errors.py` đã bổ sung heuristic cho các lỗi 400/401/404 bị LiteLLM bọc trong `APIError` để không retry/rotate vô ích.
 - Ingestion + Vector DB:

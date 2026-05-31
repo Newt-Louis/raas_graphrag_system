@@ -105,7 +105,7 @@ Tại `/platform`, cấu hình AI theo thứ tự:
 
 1. Tạo provider Gemini với `code=gemini` cho embedding.
 2. Nhập một Gemini API key thật.
-3. Tạo một embedding model profile Gemini, ví dụ model `gemini-embedding-001`, và chốt `embedding_dimensions` cho LanceDB index.
+3. Tạo một embedding model profile Gemini, nhập đúng model cần dùng và chốt `embedding_dimensions` cho LanceDB index.
 4. Tạo LLM model profile.
 5. Đảm bảo profile/key/provider đang enabled và không bị locked.
 

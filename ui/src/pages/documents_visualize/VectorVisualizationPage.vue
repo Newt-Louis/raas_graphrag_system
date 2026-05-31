@@ -44,7 +44,6 @@ interface VectorSearchResponse {
   app_id: string
   collection_id: string | null
   vector_table: string
-  embedding_profile_id: string | null
   embedding_model: string | null
   top_k: number
   min_similarity: number
@@ -55,7 +54,6 @@ interface VectorSearchResponse {
 interface VectorHealthItem {
   document_id: string
   collection_id: string | null
-  embedding_profile_id: string | null
   embedding_profile_name: string | null
   embedding_model: string | null
   embedding_dimension: number | null
@@ -271,7 +269,7 @@ function scoreWidth(value: number) {
             <span>min {{ formatScore(searchResult.min_similarity) }}</span>
           </div>
         </div>
-        <Tag :value="searchResult.embedding_profile_id || 'runtime profile'" severity="info" />
+        <Tag :value="searchResult.embedding_model || 'embedding model'" severity="info" />
       </div>
 
       <div v-if="searchResult.matches.length" class="match-list">
@@ -381,7 +379,6 @@ function scoreWidth(value: number) {
           <template #body="{ data }">
             <div class="profile-cell">
               <strong>{{ data.embedding_profile_name || '-' }}</strong>
-              <span>{{ data.embedding_profile_id || '-' }}</span>
             </div>
           </template>
         </Column>

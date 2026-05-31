@@ -158,7 +158,6 @@ const capabilityOptions: SelectOption[] = [
 
 const commonColumns: EditableColumn[] = [
   { field: 'capability', header: 'capability', width: '120px', editor: 'select' },
-  { field: 'pool_id', header: 'pool_id', width: '220px', editor: 'text' },
   { field: 'provider_id', header: 'provider', width: '180px', editor: 'select' },
   { field: 'api_key_id', header: 'api_key_id', width: '220px', editor: 'text' },
   { field: 'model_id', header: 'model_catalog', width: '220px', editor: 'select' },
@@ -166,6 +165,10 @@ const commonColumns: EditableColumn[] = [
   { field: 'model_name', header: 'model_name', width: '260px', editor: 'text' },
   { field: 'api_base', header: 'api_base', width: '260px', editor: 'text' },
   { field: 'endpoint_id', header: 'endpoint_id', width: '170px', editor: 'text' },
+]
+
+const llmPoolColumns: EditableColumn[] = [
+  { field: 'pool_id', header: 'pool_id', width: '220px', editor: 'text' },
   { field: 'rotation_order', header: 'rotation_order', width: '130px', editor: 'number' },
   { field: 'weight', header: 'weight', width: '100px', editor: 'number' },
   { field: 'daily_request_count', header: 'daily_request_count', width: '160px', editor: 'number' },
@@ -192,6 +195,9 @@ const embeddingColumns: EditableColumn[] = [
 
 const tailColumns: EditableColumn[] = [
   { field: 'extra_parameters', header: 'extra_parameters', width: '260px', editor: 'json' },
+]
+
+const llmStatusColumn: EditableColumn[] = [
   { field: 'status', header: 'status', width: '100px', editor: 'select' },
 ]
 
@@ -268,8 +274,10 @@ const form = reactive<Omit<ApiModelProfile, 'id' | 'status'>>({
 
 const editableColumns = computed(() => [
   ...commonColumns,
+  ...(form.capability === 'llm' ? llmPoolColumns : []),
   ...(form.capability === 'llm' ? llmColumns : embeddingColumns),
   ...tailColumns,
+  ...(form.capability === 'llm' ? llmStatusColumn : []),
 ])
 
 const providerOptions = computed<SelectOption[]>(() =>
@@ -693,19 +701,21 @@ function fromApiProfile(
     cost_per_1k_output_tokens: capability === 'llm' ? llmProfile.cost_per_1k_output_tokens : null,
     cost_per_1k_tokens: capability === 'embedding' ? embeddingProfile.cost_per_1k_tokens : null,
     extra_parameters: JSON.stringify(profile.extra_parameters || {}),
-    status: profile.is_locked
-      ? 'locked'
-      : profile.today_quota_exhausted
-        ? 'cooldown'
-        : profile.is_enabled
-          ? 'active'
-          : 'disabled',
+    status:
+      capability === 'embedding'
+        ? 'active'
+        : profile.is_locked
+          ? 'locked'
+          : profile.today_quota_exhausted
+            ? 'cooldown'
+            : profile.is_enabled
+              ? 'active'
+              : 'disabled',
   }
 }
 
 function toApiPayload(row: Omit<ApiModelProfile, 'id'> | ApiModelProfile) {
   const common = {
-    pool_id: row.pool_id || null,
     provider_id: row.provider_id || null,
     api_key_id: row.api_key_id || null,
     model_id: row.model_id || null,
@@ -713,13 +723,6 @@ function toApiPayload(row: Omit<ApiModelProfile, 'id'> | ApiModelProfile) {
     model_name: row.model_name,
     api_base: row.api_base || null,
     endpoint_id: row.endpoint_id || null,
-    rotation_order: row.rotation_order,
-    weight: row.weight,
-    is_enabled: row.status !== 'disabled',
-    is_locked: row.status === 'locked',
-    today_quota_exhausted: row.status === 'cooldown',
-    daily_request_count: row.daily_request_count,
-    minute_request_count: row.minute_request_count,
     timeout_seconds: row.timeout_seconds,
     extra_parameters: parseJson(row.extra_parameters),
   }
@@ -736,6 +739,14 @@ function toApiPayload(row: Omit<ApiModelProfile, 'id'> | ApiModelProfile) {
 
   return {
     ...common,
+    pool_id: row.pool_id || null,
+    rotation_order: row.rotation_order,
+    weight: row.weight,
+    is_enabled: row.status !== 'disabled',
+    is_locked: row.status === 'locked',
+    today_quota_exhausted: row.status === 'cooldown',
+    daily_request_count: row.daily_request_count,
+    minute_request_count: row.minute_request_count,
     temperature: row.temperature,
     top_p: row.top_p,
     top_k: row.top_k,
@@ -897,7 +908,7 @@ function messageFromError(error: unknown) {
             <InputText v-model="form.profile_name" placeholder="default-profile" />
           </label>
 
-          <label class="form-field col-4 col-md-6 col-sm-12">
+          <label v-if="form.capability === 'llm'" class="form-field col-4 col-md-6 col-sm-12">
             <span>pool_id</span>
             <InputText v-model="form.pool_id" placeholder="optional UUID" />
           </label>
@@ -912,12 +923,12 @@ function messageFromError(error: unknown) {
             <InputText v-model="form.endpoint_id" placeholder="primary" />
           </label>
 
-          <label class="form-field col-2 col-md-3 col-sm-6">
+          <label v-if="form.capability === 'llm'" class="form-field col-2 col-md-3 col-sm-6">
             <span>rotation_order</span>
             <InputNumber v-model="form.rotation_order" :min="0" input-class="full-input" />
           </label>
 
-          <label class="form-field col-2 col-md-3 col-sm-6">
+          <label v-if="form.capability === 'llm'" class="form-field col-2 col-md-3 col-sm-6">
             <span>weight</span>
             <InputNumber v-model="form.weight" :min="1" input-class="full-input" />
           </label>
@@ -1010,12 +1021,12 @@ function messageFromError(error: unknown) {
             <InputNumber v-model="form.timeout_seconds" :min="1" input-class="full-input" />
           </label>
 
-          <label class="form-field col-3 col-md-4 col-sm-12">
+          <label v-if="form.capability === 'llm'" class="form-field col-3 col-md-4 col-sm-12">
             <span>minute_request_count</span>
             <InputNumber v-model="form.minute_request_count" :min="0" input-class="full-input" />
           </label>
 
-          <label class="form-field col-3 col-md-4 col-sm-12">
+          <label v-if="form.capability === 'llm'" class="form-field col-3 col-md-4 col-sm-12">
             <span>daily_request_count</span>
             <InputNumber v-model="form.daily_request_count" :min="0" input-class="full-input" />
           </label>
@@ -1125,6 +1136,7 @@ function messageFromError(error: unknown) {
             <template #body="{ data }">
               <div class="action-row">
                 <Button
+                  v-if="data.capability === 'llm'"
                   :label="statusActionLabel(data)"
                   :severity="statusActionSeverity(data)"
                   size="small"

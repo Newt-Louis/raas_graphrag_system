@@ -51,14 +51,6 @@ class AIGatewayRuntimeTests(unittest.TestCase):
             endpoint_id=None,
             model_name="gemini/gemini-embedding-2",
         )
-        pool = SimpleNamespace(
-            profile=profile,
-            tenant_id=None,
-            app_id=None,
-            is_enabled=True,
-            is_locked=False,
-            today_quota_exhausted=False,
-        )
         provider = SimpleNamespace(
             code="gemini",
             base_url=None,
@@ -77,13 +69,13 @@ class AIGatewayRuntimeTests(unittest.TestCase):
             is_enabled=True,
             is_locked=False,
         )
-        db = FakeRuntimeSession(rows=[pool], provider=provider, api_key=api_key)
+        db = FakeRuntimeSession(rows=[profile], provider=provider, api_key=api_key)
 
         with patch("app.services.ai_gateway_runtime.decrypt_secret", return_value="secret"):
             gateway = build_embedding_gateway(db)
 
         snapshot = gateway.health_snapshot()
-        self.assertEqual(snapshot["default_embedding_profile_id"], "runtime-embedding-pool")
+        self.assertEqual(snapshot["default_embedding_profile_id"], str(profile_id))
         self.assertEqual(snapshot["profiles"][0]["keys"][0]["model_profile_id"], str(profile_id))
         self.assertEqual(snapshot["profiles"][0]["keys"][0]["model"], "gemini-embedding-2")
 
@@ -105,14 +97,6 @@ class AIGatewayRuntimeTests(unittest.TestCase):
             endpoint_id=None,
             model_name="gemini-2.5-flash",
         )
-        pool = SimpleNamespace(
-            profile=profile,
-            tenant_id=None,
-            app_id=None,
-            is_enabled=True,
-            is_locked=False,
-            today_quota_exhausted=False,
-        )
         provider = SimpleNamespace(
             code="gemini",
             base_url=None,
@@ -130,6 +114,14 @@ class AIGatewayRuntimeTests(unittest.TestCase):
             status="active",
             is_enabled=True,
             is_locked=False,
+        )
+        pool = SimpleNamespace(
+            profile=profile,
+            tenant_id=None,
+            app_id=None,
+            is_enabled=True,
+            is_locked=False,
+            today_quota_exhausted=False,
         )
         db = FakeRuntimeSession(rows=[pool], provider=provider, api_key=api_key)
 
@@ -155,14 +147,6 @@ class AIGatewayRuntimeTests(unittest.TestCase):
             endpoint_id=None,
             model_name="text-embedding-3-small",
         )
-        pool = SimpleNamespace(
-            profile=profile,
-            tenant_id=None,
-            app_id=None,
-            is_enabled=True,
-            is_locked=False,
-            today_quota_exhausted=False,
-        )
         provider = SimpleNamespace(
             code="openai",
             base_url=None,
@@ -181,9 +165,9 @@ class AIGatewayRuntimeTests(unittest.TestCase):
             is_enabled=True,
             is_locked=False,
         )
-        db = FakeRuntimeSession(rows=[pool], provider=provider, api_key=api_key)
+        db = FakeRuntimeSession(rows=[profile], provider=provider, api_key=api_key)
 
-        with self.assertRaisesRegex(AIGatewayRuntimeError, "No usable embedding model profile"):
+        with self.assertRaisesRegex(AIGatewayRuntimeError, "No usable Gemini embedding model profile"):
             build_embedding_gateway(db)
 
 

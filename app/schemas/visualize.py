@@ -16,8 +16,6 @@ class VectorSearchDebugRequest(VisualizationScopeRequest):
     query: str = Field(min_length=1)
     top_k: int = Field(default=5, ge=1, le=50)
     min_similarity: float = Field(default=0.4, ge=0.0, le=1.0)
-    embedding_profile_id: str | None = None
-    expected_dim: int | None = Field(default=None, ge=1)
 
 
 class VisualizeGraphElementContext(BaseModel):
@@ -58,7 +56,6 @@ class VectorSearchDebugResponse(BaseModel):
     app_id: str
     collection_id: str | None = None
     vector_table: str
-    embedding_profile_id: str | None = None
     embedding_model: str | None = None
     top_k: int
     min_similarity: float
@@ -74,7 +71,6 @@ class VectorHealthRequest(VisualizationScopeRequest):
 class VectorEmbeddingProfileHealthItem(BaseModel):
     document_id: str
     collection_id: str | None = None
-    embedding_profile_id: str | None = None
     embedding_profile_name: str | None = None
     embedding_model: str | None = None
     embedding_dimension: int | None = None

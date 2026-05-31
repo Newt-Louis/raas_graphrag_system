@@ -59,8 +59,6 @@ const form = reactive({
   chunk_strategy: 'parent_child',
   max_tokens: 700,
   overlap_tokens: 80,
-  embedding_profile_id: '',
-  expected_dim: null as number | null,
 })
 
 const chunkStrategyOptions: ChunkStrategyOption[] = [
@@ -178,12 +176,6 @@ function buildFormData(file: File) {
   data.append('chunk_strategy', form.chunk_strategy)
   data.append('max_tokens', String(form.max_tokens))
   data.append('overlap_tokens', String(form.overlap_tokens))
-  if (form.embedding_profile_id.trim()) {
-    data.append('embedding_profile_id', form.embedding_profile_id.trim())
-  }
-  if (form.expected_dim !== null) {
-    data.append('expected_dim', String(form.expected_dim))
-  }
   data.append('file', file)
   return data
 }
@@ -349,10 +341,6 @@ function formatBytes(bytes: number) {
         <InputText v-model="form.collection_id" autocomplete="off" />
       </label>
       <label class="form-field col-3 col-md-4 col-sm-12">
-        <span>embedding_profile_id</span>
-        <InputText v-model="form.embedding_profile_id" autocomplete="off" />
-      </label>
-      <label class="form-field col-3 col-md-4 col-sm-12">
         <span>chunk_strategy</span>
         <Select
           v-model="form.chunk_strategy"
@@ -368,10 +356,6 @@ function formatBytes(bytes: number) {
       <label class="form-field col-3 col-md-4 col-sm-6">
         <span>overlap_tokens</span>
         <InputNumber v-model="form.overlap_tokens" :min="0" :max="1000" show-buttons input-class="full-input" />
-      </label>
-      <label class="form-field col-3 col-md-4 col-sm-6">
-        <span>expected_dim</span>
-        <InputNumber v-model="form.expected_dim" :min="256" show-buttons input-class="full-input" />
       </label>
     </form>
 

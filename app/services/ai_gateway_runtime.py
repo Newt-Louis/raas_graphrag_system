@@ -11,7 +11,7 @@ from app.models.ai_gateway import (
     AIAPIKey,
     AIProvider,
     AIUsageEvent,
-    EmbeddingRotationPool,
+    EmbeddingModelProfile,
     LLMRotationPool,
 )
 
@@ -23,76 +23,58 @@ class AIGatewayRuntimeError(RuntimeError):
 def build_embedding_gateway(
     db: Session,
     *,
-    tenant_id: str | None = None,
-    app_id: str | None = None,
-    profile_id: UUID | None = None,
     rotator_options: dict | None = None,
 ) -> AIGateway:
-    rows = _embedding_pool_rows(db, tenant_id=tenant_id, app_id=app_id, profile_id=profile_id)
-    keys: list[KeyConfig] = []
-    expected_dim: int | None = None
-    max_batch_size: int | None = None
-    default_params: dict = {}
-
-    for pool in rows:
-        profile = pool.profile
+    profiles = db.scalars(
+        select(EmbeddingModelProfile).order_by(EmbeddingModelProfile.created_at.desc())
+    ).all()
+    for profile in profiles:
         provider = db.get(AIProvider, profile.provider_id)
         api_key = db.get(AIAPIKey, profile.api_key_id)
         if provider is None or api_key is None:
             continue
         if api_key.provider_id != profile.provider_id:
             continue
-        if not _is_runtime_row_usable(pool, provider, api_key, capability=AICapability.EMBEDDING):
+        if not _is_runtime_key_usable(provider, api_key, capability=AICapability.EMBEDDING):
             continue
         if not _is_gemini_embedding_provider(provider):
             continue
 
-        expected_dim = profile.embedding_dimensions
-        max_batch_size = profile.batch_size
-        default_params = dict(profile.extra_parameters or {})
-
-        keys.append(
-            KeyConfig(
-                id=str(api_key.id),
-                provider=provider.code,
-                model_name=_gemini_embedding_model_name(profile.model_name),
-                api_key=decrypt_secret(api_key.encrypted_api_key),
-                capability=AICapability.EMBEDDING.value,
-                model_profile_id=str(profile.id),
-                api_base=profile.api_base or api_key.api_base or provider.base_url,
-                endpoint_id=profile.endpoint_id or api_key.endpoint_id,
-                enabled=True,
-                locked=False,
-                tenant_allowlist={str(pool.tenant_id)} if pool.tenant_id else set(),
-                app_allowlist={str(pool.app_id)} if pool.app_id else set(),
-                extra={
-                    **(profile.extra_parameters or {}),
-                    **({"embedding_batch_size": profile.batch_size} if profile.batch_size else {}),
-                },
-            )
+        runtime_profile_id = str(profile.id)
+        return AIGateway(
+            [
+                ModelProfile(
+                    id=runtime_profile_id,
+                    capability=AICapability.EMBEDDING,
+                    keys=[
+                        KeyConfig(
+                            id=str(api_key.id),
+                            provider=provider.code,
+                            model_name=_gemini_embedding_model_name(profile.model_name),
+                            api_key=decrypt_secret(api_key.encrypted_api_key),
+                            capability=AICapability.EMBEDDING.value,
+                            model_profile_id=runtime_profile_id,
+                            api_base=profile.api_base or api_key.api_base or provider.base_url,
+                            endpoint_id=profile.endpoint_id or api_key.endpoint_id,
+                            enabled=True,
+                            locked=False,
+                            extra={
+                                **(profile.extra_parameters or {}),
+                                **({"embedding_batch_size": profile.batch_size} if profile.batch_size else {}),
+                            },
+                        )
+                    ],
+                    default_params=dict(profile.extra_parameters or {}),
+                    expected_dim=profile.embedding_dimensions,
+                    max_batch_size=profile.batch_size,
+                )
+            ],
+            default_embedding_profile_id=runtime_profile_id,
+            usage_recorder=lambda record: _record_usage(db, record),
+            rotator_options=rotator_options,
         )
-        break
 
-    if not keys:
-        raise AIGatewayRuntimeError("No usable embedding model profile is available for this scope.")
-
-    runtime_profile_id = str(profile_id) if profile_id else "runtime-embedding-pool"
-    gateway = AIGateway(
-        [
-            ModelProfile(
-                id=runtime_profile_id,
-                capability=AICapability.EMBEDDING,
-                keys=keys,
-                default_params=default_params,
-                expected_dim=expected_dim,
-                max_batch_size=max_batch_size,
-            )
-        ],
-        default_embedding_profile_id=runtime_profile_id,
-        usage_recorder=lambda record: _record_usage(db, record),
-        rotator_options=rotator_options,
-    )
-    return gateway
+    raise AIGatewayRuntimeError("No usable Gemini embedding model profile is available.")
 
 
 def build_llm_gateway(
@@ -167,34 +149,6 @@ def build_llm_gateway(
     )
 
 
-def _embedding_pool_rows(
-    db: Session,
-    *,
-    tenant_id: str | None,
-    app_id: str | None,
-    profile_id: UUID | None,
-) -> list[EmbeddingRotationPool]:
-    statement = (
-        select(EmbeddingRotationPool)
-        .options(joinedload(EmbeddingRotationPool.profile))
-        .join(EmbeddingRotationPool.profile)
-        .order_by(
-            EmbeddingRotationPool.current_position.desc(),
-            EmbeddingRotationPool.rotation_order,
-            EmbeddingRotationPool.created_at,
-        )
-    )
-    if profile_id is not None:
-        statement = statement.where(EmbeddingRotationPool.profile_id == profile_id)
-
-    rows = list(db.scalars(statement).all())
-    return [
-        row
-        for row in rows
-        if _scope_matches(row.tenant_id, tenant_id) and _scope_matches(row.app_id, app_id)
-    ]
-
-
 def _llm_pool_rows(
     db: Session,
     *,
@@ -232,7 +186,7 @@ def _scope_matches(row_scope: object, request_scope: str | None) -> bool:
 
 
 def _is_runtime_row_usable(
-    pool: EmbeddingRotationPool | LLMRotationPool,
+    pool: LLMRotationPool,
     provider: AIProvider,
     api_key: AIAPIKey,
     *,
@@ -240,13 +194,22 @@ def _is_runtime_row_usable(
 ) -> bool:
     if not pool.is_enabled or pool.is_locked or pool.today_quota_exhausted:
         return False
+    return _is_runtime_key_usable(provider, api_key, capability=capability)
+
+
+def _is_runtime_key_usable(
+    provider: AIProvider,
+    api_key: AIAPIKey,
+    *,
+    capability: AICapability,
+) -> bool:
     if not provider.is_enabled or provider.is_locked:
         return False
     if not api_key.is_enabled or api_key.is_locked:
         return False
     if api_key.status in {"disabled", "locked"}:
         return False
-    allowed_capabilities = [str(capability).lower() for capability in api_key.allowed_capabilities or []]
+    allowed_capabilities = [str(value).lower() for value in api_key.allowed_capabilities or []]
     return not allowed_capabilities or capability.value in allowed_capabilities
 
 

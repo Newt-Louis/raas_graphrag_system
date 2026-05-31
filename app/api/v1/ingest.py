@@ -62,8 +62,6 @@ async def ingest_document(
     chunk_strategy: ChunkStrategy = Form(default=ChunkStrategy.PARENT_CHILD),
     max_tokens: int = Form(default=700, ge=100),
     overlap_tokens: int = Form(default=80, ge=0, le=1000),
-    embedding_profile_id: UUID | None = Form(default=None),
-    expected_dim: int | None = Form(default=None, ge=1),
     extract_semantic_graph: bool = Form(default=False),
     llm_profile_id: UUID | None = Form(default=None),
     file: UploadFile = File(...),
@@ -111,8 +109,6 @@ async def ingest_document(
         app_id=app_id,
         collection_id=collection_id,
         chunks=bundle.chunks,
-        embedding_profile_id=embedding_profile_id,
-        expected_dim=expected_dim,
     )
     graph_result = await _persist_graph_bundle_to_kuzu(
         db=db,
@@ -133,7 +129,6 @@ async def ingest_document(
         sha256=source.sha256,
         chunk_strategy=chunk_strategy,
         stats=bundle.stats,
-        embedding_profile_id=vector_result.embedding_profile_id,
         embedding_model=vector_result.embedding_model,
         vector_table=vector_result.table_name,
         vector_stored_count=vector_result.stored_count,
@@ -152,16 +147,8 @@ async def query_vector_database(
     db: Session = Depends(get_db),
 ) -> VectorDatabaseQueryResponse:
     try:
-        profile_id = UUID(payload.embedding_profile_id) if payload.embedding_profile_id else None
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid embedding_profile_id.") from exc
-
-    try:
         vector_pipeline = _vector_database_pipeline(
             db=db,
-            tenant_id=payload.tenant_id,
-            app_id=payload.app_id,
-            embedding_profile_id=profile_id,
         )
         result = await vector_pipeline.query(
             VectorQueryRequest(
@@ -173,8 +160,6 @@ async def query_vector_database(
                 query=payload.query,
                 top_k=payload.top_k,
                 min_similarity=payload.min_similarity,
-                embedding_profile_id=str(profile_id) if profile_id else None,
-                expected_dim=payload.expected_dim,
             )
         )
     except AIGatewayRuntimeError as exc:
@@ -195,7 +180,6 @@ async def query_vector_database(
         app_id=result.app_id,
         collection_id=result.collection_id,
         vector_table=result.table_name,
-        embedding_profile_id=result.embedding_profile_id,
         embedding_model=result.embedding_model,
         usage=result.usage,
         matches=[
@@ -221,15 +205,10 @@ async def _persist_chunks_to_lancedb(
     app_id: str,
     collection_id: str | None,
     chunks: list[DocumentChunk],
-    embedding_profile_id: UUID | None,
-    expected_dim: int | None,
 ):
     try:
         vector_pipeline = _vector_database_pipeline(
             db=db,
-            tenant_id=tenant_id,
-            app_id=app_id,
-            embedding_profile_id=embedding_profile_id,
         )
         return await vector_pipeline.ingest(
             VectorIngestRequest(
@@ -255,8 +234,6 @@ async def _persist_chunks_to_lancedb(
                     for chunk in chunks
                     if chunk.is_embeddable
                 ],
-                embedding_profile_id=str(embedding_profile_id) if embedding_profile_id else None,
-                expected_dim=expected_dim,
             )
         )
     except AIGatewayRuntimeError as exc:
@@ -352,16 +329,8 @@ def _graph_context_for_matches(
 def _vector_database_pipeline(
     *,
     db: Session,
-    tenant_id: str,
-    app_id: str,
-    embedding_profile_id: UUID | None,
 ) -> GraphRAGVectorDatabasePipeline:
-    gateway = build_embedding_gateway(
-        db,
-        tenant_id=tenant_id,
-        app_id=app_id,
-        profile_id=embedding_profile_id,
-    )
+    gateway = build_embedding_gateway(db)
     return GraphRAGVectorDatabasePipeline(
         ai_client=GraphRAGAIClient(gateway),
         vector_store=get_lancedb_vector_store(),

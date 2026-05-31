@@ -6,7 +6,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.security import encrypt_secret, hash_secret, mask_secret
-from app.models.ai_gateway import AIAPIKey, EmbeddingRotationPool, LLMRotationPool
+from app.models.ai_gateway import AIAPIKey, EmbeddingModelProfile, LLMRotationPool
 from app.models.platform import CustomerApp, Tenant
 from app.repositories.ai_gateway import AIAdminRepository
 from app.schemas.ai_gateway import (
@@ -19,7 +19,6 @@ from app.schemas.ai_gateway import (
     EmbeddingModelProfileCreate,
     EmbeddingModelProfileResponse,
     EmbeddingModelProfileUpdate,
-    EmbeddingRotationPoolCreate,
     LLMModelProfileCreate,
     LLMModelProfileResponse,
     LLMModelProfileUpdate,
@@ -58,21 +57,6 @@ LLM_PROFILE_FIELDS = {
     "timeout_seconds",
     "cost_per_1k_input_tokens",
     "cost_per_1k_output_tokens",
-    "extra_parameters",
-}
-EMBEDDING_PROFILE_FIELDS = {
-    "provider_id",
-    "api_key_id",
-    "model_id",
-    "profile_name",
-    "model_name",
-    "api_base",
-    "endpoint_id",
-    "embedding_dimensions",
-    "batch_size",
-    "retrieval_top_k",
-    "timeout_seconds",
-    "cost_per_1k_tokens",
     "extra_parameters",
 }
 POOL_FIELDS = {
@@ -296,20 +280,8 @@ class AIAdminService:
             "LLM model profile could not be deleted.",
         )
 
-    def list_embedding_pools(self):
-        return self.repository.list_embedding_pools()
-
-    def create_embedding_pool(self, payload: EmbeddingRotationPoolCreate):
-        self._validate_scope(payload.tenant_id, payload.app_id)
-        if self.repository.get_embedding_profile(payload.profile_id) is None:
-            raise AIAdminNotFoundError("Embedding model profile not found.")
-        return self._commit_or_conflict(
-            lambda: self.repository.create_embedding_pool(payload.model_dump()),
-            "Embedding rotation pool already exists for this profile.",
-        )
-
     def list_embedding_profiles(self) -> list[EmbeddingModelProfileResponse]:
-        return [self._embedding_profile_response(pool) for pool in self.repository.list_embedding_profiles()]
+        return [self._embedding_profile_response(profile) for profile in self.repository.list_embedding_profiles()]
 
     def create_embedding_profile(self, payload: EmbeddingModelProfileCreate) -> EmbeddingModelProfileResponse:
         self._validate_embedding_profile_refs(
@@ -317,22 +289,11 @@ class AIAdminService:
             api_key_id=payload.api_key_id,
             model_id=payload.model_id,
         )
-        values = payload.model_dump()
-        profile_values, pool_values = self._split_values(values, EMBEDDING_PROFILE_FIELDS, POOL_FIELDS)
-
-        def create_profile_and_pool():
-            profile = self.repository.create_embedding_profile(profile_values)
-            pool_values.pop("pool_id", None)
-            pool_values["id"] = profile.id
-            pool_values["profile_id"] = profile.id
-            pool_values["name"] = profile.profile_name
-            return self.repository.create_embedding_pool(pool_values)
-
-        pool = self._commit_or_conflict(
-            create_profile_and_pool,
-            "Embedding model profile already exists in runtime pool.",
+        profile = self._commit_or_conflict(
+            lambda: self.repository.create_embedding_profile(payload.model_dump()),
+            "Embedding model profile could not be saved.",
         )
-        return self._embedding_profile_response(pool)
+        return self._embedding_profile_response(profile)
 
     def update_embedding_profile(self, profile_id: UUID, payload: EmbeddingModelProfileUpdate) -> EmbeddingModelProfileResponse:
         profile = self.repository.get_embedding_profile(profile_id)
@@ -340,35 +301,17 @@ class AIAdminService:
             raise AIAdminNotFoundError("Embedding model profile not found.")
 
         values = payload.model_dump(exclude_unset=True)
-        pool = self.repository.get_embedding_pool(values["pool_id"]) if values.get("pool_id") else None
-        if pool is None:
-            pool = self.repository.get_embedding_pool_by_profile(profile_id)
-        if pool is None:
-            raise AIAdminNotFoundError("Embedding model profile runtime pool row not found.")
-
         self._validate_embedding_profile_refs(
             provider_id=values.get("provider_id", profile.provider_id),
             api_key_id=values.get("api_key_id", profile.api_key_id),
             model_id=values.get("model_id", profile.model_id),
         )
 
-        profile_values, pool_values = self._split_values(values, EMBEDDING_PROFILE_FIELDS, POOL_FIELDS)
-        pool_values.pop("pool_id", None)
-
-        def update_profile_and_pool():
-            if profile_values:
-                self.repository.update_embedding_profile(profile, profile_values)
-                if "profile_name" in profile_values and "name" not in pool_values:
-                    pool_values["name"] = profile_values["profile_name"]
-            if pool_values:
-                return self.repository.update_embedding_pool(pool, pool_values)
-            return pool
-
-        updated_pool = self._commit_or_conflict(
-            update_profile_and_pool,
-            "Embedding model profile runtime pool row could not be updated.",
+        updated_profile = self._commit_or_conflict(
+            lambda: self.repository.update_embedding_profile(profile, values),
+            "Embedding model profile could not be updated.",
         )
-        return self._embedding_profile_response(updated_pool)
+        return self._embedding_profile_response(updated_profile)
 
     def delete_embedding_profile(self, profile_id: UUID) -> None:
         profile = self.repository.get_embedding_profile(profile_id)
@@ -417,7 +360,11 @@ class AIAdminService:
             raise AIAdminValidationError("provider_id is required.")
         if api_key_id is None:
             raise AIAdminValidationError("api_key_id is required.")
-        self._require_provider(provider_id)
+        provider = self.repository.get_provider(provider_id)
+        if provider is None:
+            raise AIAdminNotFoundError("Provider not found.")
+        if str(provider.code or "").strip().lower() != "gemini":
+            raise AIAdminValidationError("Embedding model profiles currently require provider code 'gemini'.")
         api_key = self.db.get(AIAPIKey, api_key_id)
         if api_key is None:
             raise AIAdminNotFoundError("API key not found.")
@@ -439,10 +386,6 @@ class AIAdminService:
     def _require_llm_pool(self, pool_id: UUID) -> None:
         if self.repository.get_llm_pool(pool_id) is None:
             raise AIAdminNotFoundError("LLM rotation pool not found.")
-
-    def _require_embedding_pool(self, pool_id: UUID) -> None:
-        if self.repository.get_embedding_pool(pool_id) is None:
-            raise AIAdminNotFoundError("Embedding rotation pool not found.")
 
     def _validate_scope(self, tenant_id: UUID | None, app_id: UUID | None) -> None:
         if tenant_id is not None and self.db.get(Tenant, tenant_id) is None:
@@ -494,11 +437,9 @@ class AIAdminService:
             updated_at=profile.updated_at,
         )
 
-    def _embedding_profile_response(self, pool: EmbeddingRotationPool) -> EmbeddingModelProfileResponse:
-        profile = pool.profile
+    def _embedding_profile_response(self, profile: EmbeddingModelProfile) -> EmbeddingModelProfileResponse:
         return EmbeddingModelProfileResponse(
             id=profile.id,
-            pool_id=pool.id,
             provider_id=profile.provider_id,
             api_key_id=profile.api_key_id,
             model_id=profile.model_id,
@@ -506,14 +447,6 @@ class AIAdminService:
             model_name=profile.model_name,
             api_base=profile.api_base,
             endpoint_id=profile.endpoint_id,
-            rotation_order=pool.rotation_order,
-            weight=pool.weight,
-            is_enabled=pool.is_enabled,
-            is_locked=pool.is_locked,
-            lock_reason=pool.lock_reason,
-            today_quota_exhausted=pool.today_quota_exhausted,
-            daily_request_count=pool.daily_request_count,
-            minute_request_count=pool.minute_request_count,
             embedding_dimensions=profile.embedding_dimensions,
             batch_size=profile.batch_size,
             retrieval_top_k=profile.retrieval_top_k,
