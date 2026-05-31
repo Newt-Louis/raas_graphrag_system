@@ -220,7 +220,7 @@ function initCytoscape() {
       data: {
         id: node.id(),
         node_type: node.data('node_type'),
-        label: node.data('label'),
+        label: node.data('full_label') ?? node.data('label'),
         properties: node.data('properties') ?? {},
       },
     }
@@ -318,6 +318,7 @@ function renderGraph(payload: GraphResponse) {
       data: {
         id: node.id,
         label: truncateLabel(node.label),
+        full_label: node.label,
         node_type: node.node_type,
         properties: node.properties,
       },
@@ -392,7 +393,7 @@ function truncateLabel(label: string): string {
   if (!label) {
     return ''
   }
-  return label.length > 30 ? `${label.slice(0, 27)}…` : label
+  return label.length > 48 ? `${label.slice(0, 45)}…` : label
 }
 
 function nodeColor(type: string): string {

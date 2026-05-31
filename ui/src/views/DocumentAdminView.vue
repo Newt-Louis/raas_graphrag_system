@@ -1,6 +1,8 @@
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import Button from 'primevue/button'
+import Column from 'primevue/column'
+import DataTable from 'primevue/datatable'
 import Dialog from 'primevue/dialog'
 import FileUpload from 'primevue/fileupload'
 import InputNumber from 'primevue/inputnumber'
@@ -45,10 +47,28 @@ interface IngestResponse {
   warnings?: string[]
 }
 
+interface DocumentRecord {
+  id: string
+  filename: string
+  extension: string
+  content_type: string | null
+  byte_size: number
+  sha256: string
+  status: string
+  chunk_count: number
+  vector_record_count: number
+  graph_record_count: number
+  last_indexed_at: string | null
+  created_at: string
+}
+
 const uploadDialogVisible = ref(false)
 const selectedFiles = ref<File[]>([])
 const uploadRecords = ref<UploadRecord[]>([])
+const documents = ref<DocumentRecord[]>([])
 const activeUploads = ref(0)
+const deletingDocumentIds = ref(new Set<string>())
+const isLoadingDocuments = ref(false)
 const lastError = ref('')
 const activeVisualizationTab = ref<VisualizationTab>('vector')
 
@@ -91,6 +111,8 @@ const acceptedFileTypes = [
 
 const canUpload = computed(() => Boolean(form.tenant_id.trim() && form.app_id.trim()))
 const isUploading = computed(() => activeUploads.value > 0)
+
+onMounted(loadDocuments)
 
 function openUploadDialog() {
   uploadDialogVisible.value = true
@@ -156,13 +178,52 @@ async function uploadSelected(event: FileUploadUploaderEvent) {
         vector_stored_count: result.vector_stored_count,
         error: result.warnings?.join(' '),
       })
+      await loadDocuments()
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Upload failed.'
       updateRecord(id, { status: 'failed', progress: 100, error: message })
       lastError.value = message
+      await loadDocuments()
     } finally {
       activeUploads.value -= 1
     }
+  }
+}
+
+async function loadDocuments() {
+  isLoadingDocuments.value = true
+  try {
+    const response = await fetch('/api/v1/documents')
+    const payload = await response.json().catch(() => [])
+    if (!response.ok) {
+      const detail = typeof payload.detail === 'string' ? payload.detail : response.statusText
+      throw new Error(detail)
+    }
+    documents.value = Array.isArray(payload) ? payload as DocumentRecord[] : []
+  } catch (error) {
+    lastError.value = error instanceof Error ? error.message : 'Document list could not be loaded.'
+  } finally {
+    isLoadingDocuments.value = false
+  }
+}
+
+async function deleteDocument(document: DocumentRecord) {
+  if (!window.confirm(`Delete ${document.filename}?`)) {
+    return
+  }
+  deletingDocumentIds.value.add(document.id)
+  try {
+    const response = await fetch(`/api/v1/documents/${document.id}`, { method: 'DELETE' })
+    const payload = await response.json().catch(() => ({}))
+    if (!response.ok) {
+      const detail = typeof payload.detail === 'string' ? payload.detail : response.statusText
+      throw new Error(detail)
+    }
+    await loadDocuments()
+  } catch (error) {
+    lastError.value = error instanceof Error ? error.message : 'Document could not be deleted.'
+  } finally {
+    deletingDocumentIds.value.delete(document.id)
   }
 }
 
@@ -176,6 +237,7 @@ function buildFormData(file: File) {
   data.append('chunk_strategy', form.chunk_strategy)
   data.append('max_tokens', String(form.max_tokens))
   data.append('overlap_tokens', String(form.overlap_tokens))
+  data.append('extract_semantic_graph', 'true')
   data.append('file', file)
   return data
 }
@@ -232,7 +294,7 @@ function fileKey(file: File) {
   return `${file.name}:${file.size}:${file.lastModified}`
 }
 
-function statusSeverity(status: UploadStatus) {
+function statusSeverity(status: string) {
   if (status === 'ready') {
     return 'success'
   }
@@ -254,6 +316,16 @@ function formatBytes(bytes: number) {
   const unit = units[exponent] ?? 'B'
   return `${(bytes / 1024 ** exponent).toFixed(exponent === 0 ? 0 : 1)} ${unit}`
 }
+
+function formatDate(value: string | null) {
+  if (!value) {
+    return '-'
+  }
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  }).format(new Date(value))
+}
 </script>
 
 <template>
@@ -267,32 +339,54 @@ function formatBytes(bytes: number) {
 
   <section class="panel document-panel">
     <div class="panel-title">
-      <h2>Recent ingest jobs</h2>
-      <Tag :value="`${uploadRecords.length} files`" severity="secondary" />
+      <h2>Uploaded documents</h2>
+      <Tag :value="`${documents.length} files`" severity="secondary" />
     </div>
 
-    <div v-if="uploadRecords.length" class="document-list">
-      <div v-for="record in uploadRecords" :key="record.id" class="document-row">
-        <div class="document-main">
-          <strong>{{ record.filename }}</strong>
-          <span>{{ formatBytes(record.size) }}</span>
-        </div>
-        <div class="document-progress">
-          <ProgressBar :value="record.progress" :show-value="false" />
-          <small v-if="record.document_id">{{ record.document_id }}</small>
-          <small v-else-if="record.error">{{ record.error }}</small>
-        </div>
-        <div class="document-meta">
-          <span v-if="record.chunks !== undefined">{{ record.chunks }} chunks</span>
-          <span v-if="record.vector_stored_count !== undefined">{{ record.vector_stored_count }} vectors</span>
-          <Tag :value="record.status" :severity="statusSeverity(record.status)" />
-        </div>
-      </div>
-    </div>
+    <DataTable
+      v-if="documents.length"
+      :value="documents"
+      data-key="id"
+      :loading="isLoadingDocuments"
+      striped-rows
+      scrollable
+      table-style="min-width: 980px"
+    >
+      <Column field="filename" header="filename" frozen style="min-width: 240px" />
+      <Column header="size" style="width: 110px">
+        <template #body="{ data }">{{ formatBytes(data.byte_size) }}</template>
+      </Column>
+      <Column field="chunk_count" header="chunks" style="width: 90px" />
+      <Column field="vector_record_count" header="vectors" style="width: 90px" />
+      <Column field="graph_record_count" header="graph records" style="width: 130px" />
+      <Column header="indexed at" style="min-width: 180px">
+        <template #body="{ data }">{{ formatDate(data.last_indexed_at) }}</template>
+      </Column>
+      <Column header="status" style="width: 110px">
+        <template #body="{ data }">
+          <Tag :value="data.status" :severity="statusSeverity(data.status)" />
+        </template>
+      </Column>
+      <Column header="action" style="width: 80px">
+        <template #body="{ data }">
+          <Button
+            type="button"
+            icon="pi pi-trash"
+            severity="danger"
+            text
+            rounded
+            title="Delete document"
+            aria-label="Delete document"
+            :loading="deletingDocumentIds.has(data.id)"
+            @click="deleteDocument(data)"
+          />
+        </template>
+      </Column>
+    </DataTable>
 
     <div v-else class="empty-state">
       <span class="empty-icon pi pi-file-arrow-up"></span>
-      <strong>No ingest jobs in this view</strong>
+      <strong>No uploaded documents</strong>
     </div>
   </section>
 
@@ -385,13 +479,37 @@ function formatBytes(bytes: number) {
 
     <p v-if="lastError" class="error-text">{{ lastError }}</p>
 
+    <section v-if="uploadRecords.length" class="upload-progress-panel">
+      <div class="panel-title">
+        <h3>Upload progress</h3>
+        <Tag :value="`${uploadRecords.length} files`" severity="secondary" />
+      </div>
+      <div class="document-list">
+        <div v-for="record in uploadRecords" :key="record.id" class="document-row">
+          <div class="document-main">
+            <strong>{{ record.filename }}</strong>
+            <span>{{ formatBytes(record.size) }}</span>
+          </div>
+          <div class="document-progress">
+            <ProgressBar :value="record.progress" :show-value="false" />
+            <small v-if="record.document_id">{{ record.document_id }}</small>
+            <small v-else-if="record.error">{{ record.error }}</small>
+          </div>
+          <div class="document-meta">
+            <span v-if="record.chunks !== undefined">{{ record.chunks }} chunks</span>
+            <span v-if="record.vector_stored_count !== undefined">{{ record.vector_stored_count }} vectors</span>
+            <Tag :value="record.status" :severity="statusSeverity(record.status)" />
+          </div>
+        </div>
+      </div>
+    </section>
+
     <template #footer>
       <Button
         type="button"
         label="Close"
         severity="secondary"
         icon="pi pi-times"
-        :disabled="isUploading"
         @click="uploadDialogVisible = false"
       />
       <span v-if="!canUpload" class="footer-hint">tenant_id and app_id required</span>
@@ -450,6 +568,15 @@ function formatBytes(bytes: number) {
 .document-list {
   display: grid;
   gap: 10px;
+}
+
+.upload-progress-panel {
+  margin-top: 16px;
+}
+
+.upload-progress-panel h3 {
+  margin: 0;
+  font-size: 15px;
 }
 
 .document-row {

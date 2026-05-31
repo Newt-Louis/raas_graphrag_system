@@ -42,6 +42,18 @@ class DatabaseModelTests(unittest.TestCase):
 
         self.assertFalse(key_hash_column.unique)
 
+    def test_document_registry_allows_unscoped_rows_and_guards_filename_duplicates(self) -> None:
+        documents = Base.metadata.tables["documents"]
+        unique_constraints = {
+            constraint.name
+            for constraint in documents.constraints
+            if constraint.name
+        }
+
+        self.assertTrue(documents.columns["tenant_id"].nullable)
+        self.assertTrue(documents.columns["app_id"].nullable)
+        self.assertIn("uq_documents_filename", unique_constraints)
+
 
 if __name__ == "__main__":
     unittest.main()

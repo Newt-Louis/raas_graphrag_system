@@ -326,11 +326,18 @@ Mục này ghi lại trạng thái mới nhất sau phiên làm việc ngày 29/
   - Route `POST /api/v1/ingest` parse/chunk tài liệu, gọi embedding gateway thật, lưu vector đã tính vào LanceDB.
   - Route `POST /api/v1/ingest/query` embed query bằng cùng embedding gateway rồi search LanceDB và trả similarity/distance/chunk metadata, có nối graph context nếu Kuzu có dữ liệu.
   - `app/graphrag/vector_database/` có pipeline GraphRAG-facing cho ingest/query LanceDB qua `GraphRAGAIClient`.
+  - Adapter `google-genai` phải đóng gói mỗi chunk thành một `types.Content` riêng trước khi gọi `embed_content()`. Riêng `gemini-embedding-2`, truyền thẳng `list[str]` làm SDK gom nhiều chuỗi thành nhiều part của một content và chỉ trả một vector.
+- Document lifecycle:
+  - Migration `202605310002_document_registry_lifecycle.py` cho phép `documents.tenant_id`/`app_id` nullable trong giai đoạn đầu và thêm unique constraint `uq_documents_filename`.
+  - `POST /api/v1/ingest` kiểm tra filename đầy đủ gồm extension trước khi lưu file. Nếu tên đã tồn tại trong PostgreSQL, route trả `409` và không parse/embed/index lại.
+  - Sau parse/chunk, route lưu document vào PostgreSQL ở trạng thái `indexing`, chuyển sang `ready` sau khi LanceDB/Kuzu hoàn tất hoặc giữ `failed` nếu index lỗi.
+  - `GET /api/v1/documents` trả danh sách registry. `DELETE /api/v1/documents/{document_id}` xóa record PostgreSQL, file upload, vector LanceDB theo `document_id` và graph Kuzu theo scope nội bộ.
+  - `ui/src/views/DocumentAdminView.vue` hiển thị danh sách tài liệu PostgreSQL và action delete. Tiến trình upload tạm thời nằm trong modal upload, không còn chiếm panel chính.
 - Graph DB/Kuzu:
   - Đã dựng `app/graphrag/graph_database/` với `KuzuGraphStore`, schema Document/Element/Chunk và relations `HAS_ELEMENT`, `HAS_CHUNK`, `DERIVED_FROM`, `NEXT_CHUNK`, `PARENT_CHUNK`.
   - Semantic graph dùng thêm node `Entity`, cạnh `MENTIONED_IN` từ entity sang chunk và cạnh `SEMANTIC_RELATION` giữa entity với thuộc tính `relation_type`. Không tạo cứng một bảng Kuzu cho từng relation type, để ontology vận hành phần mềm có thể mở rộng mà không đổi schema.
   - `app/graphrag/graph_database/ontology.py` định nghĩa allowlist entity/relation cho tài liệu quản trị phần mềm. `semantic_extraction.py` gọi LLM qua `GraphRAGAIClient`, parse JSON, loại entity/relation ngoài allowlist rồi mới persist.
-  - `POST /api/v1/ingest` luôn lưu graph structure vào Kuzu sau khi chunk tài liệu. Khi form-data có `extract_semantic_graph=true`, route hydrate LLM gateway từ PostgreSQL và trích xuất semantic graph; `llm_profile_id` là filter profile tùy chọn.
+  - `POST /api/v1/ingest` luôn lưu graph structure vào Kuzu sau khi chunk tài liệu. Structure graph `Document -> Element -> Chunk` đến từ parser/chunker và không cần LLM. Route mặc định `extract_semantic_graph=true`, hydrate LLM gateway từ PostgreSQL và trích xuất thêm knowledge graph `Entity -> relation -> Entity`; `llm_profile_id` là filter profile tùy chọn.
   - Kuzu store có traversal theo tên entity và traversal từ vector-selected chunk -> entity -> semantic neighbors -> related chunks. Retrieval orchestrator và `POST /api/v1/ingest/query` dùng traversal chunk-based để mở rộng context nếu semantic data tồn tại.
   - Startup FastAPI gọi `get_kuzu_graph_store().ensure_schema()`.
   - `app/graphrag/ingestion_pipeline.py`, `query_pipeline.py`, `engine.py` đã có wrapper tối thiểu nối sang graph/retrieval thay vì để rỗng.
@@ -344,21 +351,24 @@ Mục này ghi lại trạng thái mới nhất sau phiên làm việc ngày 29/
   - Vector health trả `embedding_dimension` lấy từ `embedding_model_profiles.embedding_dimensions` trong PostgreSQL và `vector_dimension` suy ra từ vector thực tế trong LanceDB. Vector ghi mới phải lưu UUID masterdata trong `embedding_profile_id`. Với vector cũ đã lưu `embedding_profile_id="runtime-embedding-pool"`, service fallback đối chiếu `embedding_model` đã index với model profile PostgreSQL; nếu nhiều profile cùng model nhưng khai báo dimension mâu thuẫn thì giữ `dimension_status="unknown"` thay vì đoán.
   - Frontend `/admin/documents` có khung `Visualization` với 2 tab `Vector` và `Graph`.
   - `ui/src/pages/documents_visualize/VectorVisualizationPage.vue` đã có UI thực tế cho Vector: một ô nhập test query, kết quả top matches và bảng embedding health. Hiện mặc định gửi scope dev `tenant-a`/`app-a`, `top_k=5`, `min_similarity=0.4`.
-  - `ui/src/pages/documents_visualize/GraphVisualizationPage.vue` mới là khung rỗng, chưa visualize graph.
+  - `ui/src/pages/documents_visualize/GraphVisualizationPage.vue` đã gọi graph visualize API và hiển thị graph bằng Cytoscape.js. Structure node label dùng title/excerpt/page/chunk index thay vì chỉ hiện `paragraph`, `heading` hoặc số chunk.
+- Chat GraphRAG MVP:
+  - Endpoint `POST /api/v1/chat/completions` embed query qua cùng Gemini embedding gateway với ingest, search LanceDB, mở rộng context qua Kuzu semantic traversal, compact context theo budget rồi gọi LLM gateway để synthesize answer.
+  - Response chat trả answer, retrieval strategy và citation tối thiểu; không đẩy raw vector metadata/debug payload sang UI chat hoặc vào prompt LLM.
+  - `ui/src/views/EmbedChatView.vue` là màn hình chat full-page thực tế, gọi completion API, giữ history ngắn theo session và hiển thị citation mở rộng khi cần.
 - Tests:
-  - Đã thêm test cho Kuzu structure/semantic graph, traversal, visualization payload, parser ontology allowlist, runtime embedding/LLM gateway, vector visualization service và AI Gateway error behavior.
-  - Lệnh kiểm tra đang pass ở thời điểm 30/05/2026:
+  - Đã thêm test cho Kuzu structure/semantic graph, label visualization, traversal, visualization payload, parser ontology allowlist, runtime embedding/LLM gateway, chat completion context budget, vector visualization service và AI Gateway error behavior.
+  - Lệnh kiểm tra đang pass ở thời điểm 01/06/2026:
     - `PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m unittest discover -s test`
     - `PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m compileall -q app`
     - `cd ui && npm run build`
+  - Sau refactor lifecycle document, dữ liệu test cũ trong `data/lancedb` và `data/kuzu` đã được clean. Kuzu chỉ còn schema rỗng để backend khởi động; LanceDB chưa còn table vector.
 
 ### Chưa Hoàn Thành
 
-- Chưa có Graph Visualization UI thật trong tab `Graph`.
-- Chat API/Chat UI chưa hoàn tất chuỗi GraphRAG đầy đủ gồm hybrid retrieval, prompt synthesis, citation và gọi LLM qua LLM gateway theo profile thật.
-- `POST /api/v1/ingest/query` và visualize vector mới là retrieval/debug, chưa phải answer synthesis.
+- Chat MVP đã có hybrid retrieval, prompt synthesis, citation và gọi LLM gateway; chưa có auth, persistence chat session/history, streaming và reranking production.
+- `POST /api/v1/ingest/query` và visualize vector vẫn là retrieval/debug riêng; answer synthesis nằm ở `POST /api/v1/chat/completions`.
 - Scope hiện tại cho frontend visualize còn hard-code dev `tenant-a`/`app-a`; cần thay bằng tenant/app context thật khi bước đa tenant được triển khai.
-- Document metadata trong PostgreSQL chưa được đồng bộ đầy đủ với ingest route chính; hiện flow chính dựa vào runtime LanceDB/Kuzu và response route.
 - Chưa có community detection Leiden/Louvain và community summary.
 - Chưa có job queue/background worker cho ingestion; route ingest hiện xử lý trực tiếp trong request.
 - Chưa có auth/permission boundary production cho Platform Admin, Customer Admin, End User.
@@ -377,23 +387,16 @@ Mục này ghi lại trạng thái mới nhất sau phiên làm việc ngày 29/
    - Search debugger có trả đúng chunk không.
    - Similarity có hợp lý không.
    - Embedding health không mismatch dimension.
-3. Làm Graph tab:
-   - Dùng Cytoscape.js gọi `POST /api/v1/visualize/graph`.
-   - Hiển thị document -> chunks -> source elements và entity -> mentioned chunk.
-   - Hiển thị quan hệ next/parent/source cùng semantic relations.
-   - Thêm filter theo document/chunk.
-4. Hoàn thiện chat GraphRAG:
-   - Chat endpoint lấy context từ vector + graph.
-   - Lắp prompt/citation.
-   - Gọi LLM gateway.
-   - Trả answer + citations + debug retrieval metadata.
-5. Thêm persistence/lifecycle document trong PostgreSQL:
-   - Status uploaded/parsing/indexing/ready/failed.
-   - Chunk/vector/graph counts.
-   - Last indexed timestamp.
-6. Thêm nền job async:
+3. Kiểm tra Graph tab sau khi upload lại dữ liệu sạch:
+   - So sánh số node/edge với số chunk/element của đúng một tài liệu.
+   - Kiểm tra filter document và các quan hệ next/parent/source cùng semantic relations.
+4. Test luồng chat GraphRAG bằng dữ liệu thật:
+   - Upload lại tài liệu để tạo semantic graph bằng LLM.
+   - Gọi `/embed/chat` và kiểm tra câu trả lời cùng citation.
+   - Theo dõi token usage, điều chỉnh chunk size/context budget và bổ sung rerank nếu retrieval còn dư context.
+5. Thêm nền job async:
    - Upload nhanh.
    - Worker ingest/index.
    - Retry/idempotency.
    - Progress status cho UI.
-7. Khi ổn luồng đơn giản, mới mở rộng tenant/app/auth/quota production.
+6. Khi ổn luồng đơn giản, mới mở rộng tenant/app/auth/quota production.

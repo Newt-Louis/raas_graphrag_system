@@ -813,18 +813,39 @@ class KuzuGraphStore:
         nodes: list[GraphVisualizationNode] = []
         for label, fields in (
             ("Document", "n.id, n.document_id, n.title, n.filename, n.metadata_json"),
-            ("Element", "n.id, n.element_id, n.element_type, n.text, n.metadata_json"),
+            (
+                "Element",
+                "n.id, n.element_id, n.element_type, n.text, n.metadata_json, "
+                "n.page_number, n.sheet_name, n.slide_number",
+            ),
             ("Chunk", "n.id, n.chunk_id, n.chunk_index, n.text, n.metadata_json"),
         ):
             rows = _rows(connection.execute(f"MATCH (n:{label}) WHERE {where_document} RETURN {fields}", params))
             for row in rows:
                 properties = _dict(row[4])
                 properties.update({"record_id": str(row[1]), "detail": str(row[3] or "")})
+                if label == "Element":
+                    properties.update(
+                        {
+                            "element_type": str(row[2] or ""),
+                            "page_number": int(row[5] or 0) or None,
+                            "sheet_name": str(row[6] or "") or None,
+                            "slide_number": int(row[7] or 0) or None,
+                        }
+                    )
+                if label == "Chunk":
+                    properties["chunk_index"] = int(row[2] or 0)
                 nodes.append(
                     GraphVisualizationNode(
                         id=str(row[0]),
                         node_type=label,
-                        label=str(row[2] or row[1]),
+                        label=_structure_node_label(
+                            node_type=label,
+                            record_id=str(row[1]),
+                            value=row[2],
+                            detail=str(row[3] or ""),
+                            properties=properties,
+                        ),
                         properties=properties,
                     )
                 )
@@ -1106,6 +1127,45 @@ def _document_where(scope: GraphDatabaseScope, document_id: str | None, *, alias
 
 def _normalized_name(value: str) -> str:
     return " ".join(str(value).casefold().split())
+
+
+def _structure_node_label(
+    *,
+    node_type: str,
+    record_id: str,
+    value: Any,
+    detail: str,
+    properties: dict[str, Any],
+) -> str:
+    if node_type == "Document":
+        return _excerpt(str(value or detail or record_id), limit=84)
+    if node_type == "Chunk":
+        chunk_number = int(value or 0) + 1
+        return f"Chunk {chunk_number}: {_excerpt(detail, limit=72)}"
+
+    element_type = str(value or "element").replace("_", " ").strip().title()
+    location = _element_location(properties)
+    excerpt = _excerpt(detail, limit=72)
+    if excerpt:
+        return f"{element_type}{location}: {excerpt}"
+    return f"{element_type}{location}"
+
+
+def _element_location(properties: dict[str, Any]) -> str:
+    if properties.get("page_number"):
+        return f" - page {properties['page_number']}"
+    if properties.get("slide_number"):
+        return f" - slide {properties['slide_number']}"
+    if properties.get("sheet_name"):
+        return f" - sheet {properties['sheet_name']}"
+    return ""
+
+
+def _excerpt(value: str, *, limit: int) -> str:
+    clean_value = " ".join(str(value or "").split())
+    if len(clean_value) <= limit:
+        return clean_value
+    return f"{clean_value[: limit - 3].rstrip()}..."
 
 
 def _visualization_edge(

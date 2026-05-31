@@ -84,6 +84,19 @@ class InMemoryPrecomputedVectorStore:
             )
         return records[: max(1, limit)]
 
+    def delete_document(self, *, scope: VectorDatabaseScope, document_id: str) -> int:
+        matching_ids = [
+            vector_id
+            for vector_id, record in self._records.items()
+            if record.tenant_id == scope.tenant_id
+            and record.app_id == scope.app_id
+            and (not scope.collection_id or record.collection_id == scope.collection_id)
+            and record.document_id == document_id
+        ]
+        for vector_id in matching_ids:
+            del self._records[vector_id]
+        return len(matching_ids)
+
 
 def _cosine_similarity(left: list[float], right: list[float]) -> float:
     dot = sum(a * b for a, b in zip(left, right, strict=True))

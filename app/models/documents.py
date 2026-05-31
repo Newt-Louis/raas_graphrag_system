@@ -15,11 +15,12 @@ class Document(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "documents"
     __table_args__ = (
         UniqueConstraint("tenant_id", "app_id", "sha256", name="uq_documents_scope_sha256"),
+        UniqueConstraint("filename", name="uq_documents_filename"),
         Index("ix_documents_scope_status", "tenant_id", "app_id", "status"),
     )
 
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
-    app_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("customer_apps.id", ondelete="CASCADE"), nullable=False)
+    tenant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"))
+    app_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("customer_apps.id", ondelete="CASCADE"))
     collection_id: Mapped[str | None] = mapped_column(String(120))
     filename: Mapped[str] = mapped_column(String(512), nullable=False)
     extension: Mapped[str] = mapped_column(String(32), nullable=False)

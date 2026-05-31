@@ -112,6 +112,21 @@ class KuzuGraphDatabaseTests(unittest.TestCase):
         self.assertIn("MENTIONED_IN", {edge.relation_type for edge in visualization.edges})
         self.assertNotIn("Entity", {node.node_type for node in after_delete.nodes})
 
+    def test_structure_visualization_labels_include_readable_content(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bundle = _bundle(temp_dir, tenant_id="tenant-a", app_id="app-a")
+            store = KuzuGraphStore(Path(temp_dir) / "kuzu" / "graph.db")
+            scope = GraphDatabaseScope("tenant-a", "app-a", "docs")
+
+            store.ingest_bundle(bundle)
+            visualization = store.graph_visualization(scope=scope)
+
+        element_labels = [node.label for node in visualization.nodes if node.node_type == "Element"]
+        chunk_labels = [node.label for node in visualization.nodes if node.node_type == "Chunk"]
+        self.assertTrue(any("Use tenant scoped APIs" in label for label in element_labels))
+        self.assertTrue(any(label.startswith("Chunk 1:") for label in chunk_labels))
+        self.assertNotIn("paragraph", element_labels)
+
     def test_semantic_extraction_parser_enforces_ontology_allowlist(self) -> None:
         extraction = parse_semantic_extraction(
             """

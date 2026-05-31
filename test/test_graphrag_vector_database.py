@@ -140,6 +140,29 @@ class GraphRAGVectorDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual([match.chunk_id for match in query_result.matches], ["refund-a"])
 
+    async def test_delete_document_removes_only_matching_scope_records(self) -> None:
+        store = InMemoryPrecomputedVectorStore(table_name="test_chunks")
+        pipeline = GraphRAGVectorDatabasePipeline(
+            ai_client=FakeEmbeddingAIClient(),
+            vector_store=store,
+        )
+        scope = VectorDatabaseScope("tenant-a", "support", "docs")
+        await pipeline.ingest(
+            VectorIngestRequest(
+                scope=scope,
+                chunks=[
+                    VectorDocumentChunk(document_id="policy-a", chunk_id="refund-a", text="Refund policy."),
+                    VectorDocumentChunk(document_id="policy-b", chunk_id="refund-b", text="Refund policy."),
+                ],
+            )
+        )
+
+        deleted = store.delete_document(scope=scope, document_id="policy-a")
+        remaining = store.list_records(scope=scope)
+
+        self.assertEqual(deleted, 1)
+        self.assertEqual([record.document_id for record in remaining], ["policy-b"])
+
     async def test_image_chunks_are_sent_to_embedding_gateway_as_data_url_payloads(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             image_path = Path(temp_dir) / "photo.png"

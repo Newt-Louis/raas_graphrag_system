@@ -1,17 +1,41 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.orm import Session
 
+from app.db.session import get_db
+from app.graphrag.vector_database import VectorDatabasePipelineError
 from app.schemas.chat import (
+    ChatCompletionRequest,
+    ChatCompletionResponse,
     ChatRetrieveRequest,
     ChatRetrieveResponse,
     RetrievedContextResponse,
 )
+from app.services.ai_gateway_runtime import AIGatewayRuntimeError
+from app.services.chat import ChatCompletionError, ChatCompletionService
 from app.services.retrieval.factory import get_retrieval_orchestrator
 from app.services.retrieval.models import RetrievalRequest
 
 
 router = APIRouter(prefix="/chat", tags=["chat"])
+
+
+@router.post("/completions", response_model=ChatCompletionResponse)
+async def complete_chat(
+    payload: ChatCompletionRequest,
+    db: Session = Depends(get_db),
+) -> ChatCompletionResponse:
+    try:
+        return await ChatCompletionService(db).complete(payload)
+    except AIGatewayRuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    except VectorDatabasePipelineError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    except ChatCompletionError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
 
 
 @router.post("/retrieve", response_model=ChatRetrieveResponse)

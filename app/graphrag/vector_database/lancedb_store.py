@@ -126,6 +126,27 @@ class LanceDBPrecomputedVectorStore:
             for row in rows
         ]
 
+    def delete_document(self, *, scope: VectorDatabaseScope, document_id: str) -> int:
+        connection = self._connection()
+        if self.table_name not in set(connection.table_names(limit=10_000)):
+            return 0
+
+        filters = [
+            self._scope_filter(scope),
+            f"document_id = {_sql_literal(document_id)}",
+        ]
+        table = connection.open_table(self.table_name)
+        matching_records = (
+            table.search(None)
+            .where(" AND ".join(filters), prefilter=True)
+            .select(["vector_id"])
+            .limit(100_000)
+            .to_list()
+        )
+        if matching_records:
+            table.delete(" AND ".join(filters))
+        return len(matching_records)
+
     def _connection(self):
         try:
             import lancedb

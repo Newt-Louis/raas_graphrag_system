@@ -11,7 +11,12 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.db.session import get_db
 from app.graphrag.ai_client import GraphRAGAIClient
-from app.graphrag.graph_database import KuzuGraphStoreError, SemanticGraphExtractor
+from app.graphrag.graph_database import (
+    GraphDatabaseScope,
+    KuzuGraphStoreError,
+    SemanticGraphExtractor,
+    get_kuzu_graph_store,
+)
 from app.graphrag.ingestion_pipeline import GraphRAGIngestionPipeline
 from app.graphrag.query_pipeline import GraphRAGQueryPipeline
 from app.graphrag.vector_database import (
@@ -33,6 +38,11 @@ from app.schemas.ingest import (
     VectorDatabaseQueryResponse,
 )
 from app.services.ai_gateway_runtime import AIGatewayRuntimeError, build_embedding_gateway, build_llm_gateway
+from app.services.documents import (
+    DocumentAlreadyUploadedError,
+    DocumentLifecycleError,
+    DocumentLifecycleService,
+)
 from app.services.ingestion import DocumentIngestionPipeline
 from app.services.ingestion.models import ChunkStrategy, ChunkingConfig, DocumentChunk, DocumentScope
 from app.services.ingestion.parsers import (
@@ -62,7 +72,7 @@ async def ingest_document(
     chunk_strategy: ChunkStrategy = Form(default=ChunkStrategy.PARENT_CHILD),
     max_tokens: int = Form(default=700, ge=100),
     overlap_tokens: int = Form(default=80, ge=0, le=1000),
-    extract_semantic_graph: bool = Form(default=False),
+    extract_semantic_graph: bool = Form(default=True),
     llm_profile_id: UUID | None = Form(default=None),
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
@@ -70,10 +80,14 @@ async def ingest_document(
     if not file.filename:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Missing filename.")
 
+    document_service = DocumentLifecycleService(db)
     try:
         validate_document_file(file.filename, file.content_type)
+        filename = document_service.ensure_filename_available(file.filename)
     except DocumentValidationError as exc:
         raise HTTPException(status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, detail=str(exc)) from exc
+    except DocumentAlreadyUploadedError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
     stored_path = await _store_upload(
         file=file,
@@ -90,7 +104,7 @@ async def ingest_document(
                 app_id=app_id,
                 collection_id=collection_id,
             ),
-            filename=file.filename,
+            filename=filename,
             content_type=file.content_type,
             chunking=ChunkingConfig(
                 strategy=chunk_strategy,
@@ -99,23 +113,53 @@ async def ingest_document(
             ),
         )
     except ParserUnavailableError as exc:
+        _delete_stored_upload(stored_path)
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     except DocumentValidationError as exc:
+        _delete_stored_upload(stored_path)
         raise HTTPException(status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, detail=str(exc)) from exc
+    except Exception:
+        _delete_stored_upload(stored_path)
+        raise
 
-    vector_result = await _persist_chunks_to_lancedb(
-        db=db,
-        tenant_id=tenant_id,
-        app_id=app_id,
-        collection_id=collection_id,
-        chunks=bundle.chunks,
-    )
-    graph_result = await _persist_graph_bundle_to_kuzu(
-        db=db,
-        bundle=bundle,
-        extract_semantic_graph=extract_semantic_graph,
-        llm_profile_id=llm_profile_id,
-    )
+    try:
+        document = document_service.register_indexing_document(
+            bundle=bundle,
+            chunk_strategy=chunk_strategy,
+        )
+    except DocumentAlreadyUploadedError as exc:
+        _delete_stored_upload(stored_path)
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except DocumentLifecycleError as exc:
+        _delete_stored_upload(stored_path)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
+
+    try:
+        vector_result = await _persist_chunks_to_lancedb(
+            db=db,
+            tenant_id=tenant_id,
+            app_id=app_id,
+            collection_id=collection_id,
+            chunks=bundle.chunks,
+        )
+        graph_result = await _persist_graph_bundle_to_kuzu(
+            db=db,
+            bundle=bundle,
+            extract_semantic_graph=extract_semantic_graph,
+            llm_profile_id=llm_profile_id,
+        )
+        document_service.mark_document_ready(
+            document,
+            vector_result=vector_result,
+            graph_result=graph_result,
+        )
+    except Exception as exc:
+        _cleanup_indexed_artifacts(bundle)
+        try:
+            document_service.mark_document_failed(document, reason=str(exc))
+        except DocumentLifecycleError:
+            pass
+        raise
 
     source = bundle.parsed_document.source
     return DocumentIngestResponse(
@@ -374,3 +418,39 @@ def _safe_segment(value: str) -> str:
 def _safe_filename(value: str) -> str:
     stem = re.sub(r"[^a-zA-Z0-9_.-]+", "_", value).strip("._")
     return stem or "document"
+
+
+def _cleanup_indexed_artifacts(bundle) -> None:
+    source = bundle.parsed_document.source
+    scope = bundle.parsed_document.scope
+    vector_scope = VectorDatabaseScope(
+        tenant_id=scope.tenant_id,
+        app_id=scope.app_id,
+        collection_id=scope.collection_id,
+    )
+    try:
+        get_lancedb_vector_store().delete_document(
+            scope=vector_scope,
+            document_id=source.document_id,
+        )
+    except Exception:
+        pass
+    try:
+        get_kuzu_graph_store().delete_document(
+            scope=GraphDatabaseScope(
+                tenant_id=scope.tenant_id,
+                app_id=scope.app_id,
+                collection_id=scope.collection_id,
+            ),
+            document_id=source.document_id,
+        )
+    except Exception:
+        pass
+
+
+def _delete_stored_upload(stored_path: Path) -> None:
+    try:
+        if stored_path.is_file():
+            stored_path.unlink()
+    except OSError:
+        pass
