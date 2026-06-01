@@ -25,11 +25,15 @@ interface ChatMessage {
   failed?: boolean
 }
 
-interface ChatCompletionResponse {
-  answer: string
+interface ChatStreamMetadata {
   strategy: string
   response_type: 'grounded_answer' | 'social' | 'refusal'
   citations: Citation[]
+}
+
+interface ServerSentEvent {
+  event: string
+  data: unknown
 }
 
 const route = useRoute()
@@ -70,10 +74,14 @@ async function sendMessage() {
   errorMessage.value = ''
   await scrollToBottom()
 
+  let assistantMessage: ChatMessage | null = null
   try {
-    const response = await fetch('/api/v1/chat/completions', {
+    const response = await fetch('/api/v1/chat/completions/stream', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        Accept: 'text/event-stream',
+        'Content-Type': 'application/json',
+      },
       body: JSON.stringify({
         ...scope.value,
         session_id: sessionId.value,
@@ -81,33 +89,106 @@ async function sendMessage() {
         history,
       }),
     })
-    const payload = await response.json().catch(() => ({}))
     if (!response.ok) {
+      const payload = await response.json().catch(() => ({}))
       throw new Error(errorDetail(payload, response.statusText))
     }
 
-    const result = payload as ChatCompletionResponse
-    messages.value.push({
+    assistantMessage = {
       id: createId(),
       role: 'assistant',
-      content: result.answer,
-      citations: result.citations,
-      responseType: result.response_type,
-      strategy: result.strategy,
-    })
+      content: '',
+    }
+    messages.value.push(assistantMessage)
+    await consumeChatStream(response, assistantMessage)
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Chat request failed.'
     errorMessage.value = message
-    messages.value.push({
-      id: createId(),
-      role: 'assistant',
-      content: message,
-      failed: true,
-    })
+    if (assistantMessage && !assistantMessage.content) {
+      assistantMessage.content = message
+      assistantMessage.failed = true
+    } else {
+      messages.value.push({
+        id: createId(),
+        role: 'assistant',
+        content: message,
+        failed: true,
+      })
+    }
   } finally {
     loading.value = false
     await scrollToBottom()
   }
+}
+
+async function consumeChatStream(response: Response, assistantMessage: ChatMessage) {
+  if (!response.body) {
+    throw new Error('Streaming response body is unavailable.')
+  }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let completed = false
+
+  while (true) {
+    const { done, value } = await reader.read()
+    buffer += decoder.decode(value, { stream: !done })
+    const frames = buffer.split(/\r?\n\r?\n/)
+    buffer = frames.pop() || ''
+
+    for (const frame of frames) {
+      completed = applyServerSentEvent(parseServerSentEvent(frame), assistantMessage) || completed
+    }
+    await scrollToBottom()
+
+    if (done) {
+      break
+    }
+  }
+
+  if (buffer.trim()) {
+    completed = applyServerSentEvent(parseServerSentEvent(buffer), assistantMessage) || completed
+  }
+  if (!completed) {
+    throw new Error('Chat stream ended before the completion event.')
+  }
+}
+
+function parseServerSentEvent(frame: string): ServerSentEvent {
+  let event = 'message'
+  const dataLines: string[] = []
+
+  for (const line of frame.split(/\r?\n/)) {
+    if (line.startsWith('event:')) {
+      event = line.slice('event:'.length).trim()
+    } else if (line.startsWith('data:')) {
+      dataLines.push(line.slice('data:'.length).trimStart())
+    }
+  }
+
+  const rawData = dataLines.join('\n')
+  return {
+    event,
+    data: rawData ? JSON.parse(rawData) : {},
+  }
+}
+
+function applyServerSentEvent(event: ServerSentEvent, assistantMessage: ChatMessage) {
+  if (event.event === 'metadata') {
+    const metadata = event.data as ChatStreamMetadata
+    assistantMessage.citations = metadata.citations
+    assistantMessage.responseType = metadata.response_type
+    assistantMessage.strategy = metadata.strategy
+  } else if (event.event === 'delta') {
+    const data = event.data as { text?: unknown }
+    if (typeof data.text === 'string') {
+      assistantMessage.content += data.text
+    }
+  } else if (event.event === 'error') {
+    throw new Error(errorDetail(event.data, 'Chat stream failed.'))
+  }
+  return event.event === 'done'
 }
 
 function handleComposerKeydown(event: KeyboardEvent) {

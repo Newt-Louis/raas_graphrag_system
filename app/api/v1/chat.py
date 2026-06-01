@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import asyncio
+import json
+from collections.abc import AsyncIterator
+
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
@@ -26,6 +31,30 @@ async def complete_chat(
     payload: ChatCompletionRequest,
     db: Session = Depends(get_db),
 ) -> ChatCompletionResponse:
+    return await _complete_chat(payload, db)
+
+
+@router.post("/completions/stream")
+async def stream_chat_completion(
+    payload: ChatCompletionRequest,
+    db: Session = Depends(get_db),
+) -> StreamingResponse:
+    response = await _complete_chat(payload, db)
+    return StreamingResponse(
+        _chat_sse_events(response),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+async def _complete_chat(
+    payload: ChatCompletionRequest,
+    db: Session,
+) -> ChatCompletionResponse:
     try:
         return await ChatCompletionService(db).complete(payload)
     except AIGatewayRuntimeError as exc:
@@ -36,6 +65,22 @@ async def complete_chat(
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+
+
+async def _chat_sse_events(response: ChatCompletionResponse) -> AsyncIterator[str]:
+    yield _sse_event(
+        "metadata",
+        response.model_dump(mode="json", exclude={"answer"}),
+    )
+    for character in response.answer:
+        yield _sse_event("delta", {"text": character})
+        await asyncio.sleep(0)
+    yield _sse_event("done", {"finish_reason": "stop"})
+
+
+def _sse_event(event: str, data: dict) -> str:
+    payload = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+    return f"event: {event}\ndata: {payload}\n\n"
 
 
 @router.post("/retrieve", response_model=ChatRetrieveResponse)

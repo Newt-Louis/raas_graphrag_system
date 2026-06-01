@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from app.ai_gateway.base_rotator import RotationResult
+from app.api.v1.chat import _chat_sse_events
 from app.api.v1.ingest import ingest_document
 from app.graphrag.graph_database import (
     GraphChunkContext,
@@ -19,7 +20,7 @@ from app.graphrag.vector_database import (
     InMemoryPrecomputedVectorStore,
     PrecomputedVectorRecord,
 )
-from app.schemas.chat import ChatCompletionRequest
+from app.schemas.chat import ChatCompletionRequest, ChatCompletionResponse
 from app.services.chat.completion import (
     ChatCompletionService,
     _ContextBlock,
@@ -380,6 +381,24 @@ class ChatCompletionServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(decision.response_type, "refusal")
 
+    async def test_chat_sse_stream_emits_metadata_character_deltas_and_done(self) -> None:
+        response = ChatCompletionResponse(
+            tenant_id="tenant-a",
+            app_id="app-a",
+            session_id="session-a",
+            answer="Ổn",
+            strategy="embedding_first_social",
+            response_type="social",
+        )
+
+        events = [event async for event in _chat_sse_events(response)]
+
+        self.assertIn("event: metadata", events[0])
+        self.assertNotIn('"answer"', events[0])
+        self.assertEqual(events[1], 'event: delta\ndata: {"text":"Ổ"}\n\n')
+        self.assertEqual(events[2], 'event: delta\ndata: {"text":"n"}\n\n')
+        self.assertEqual(events[3], 'event: done\ndata: {"finish_reason":"stop"}\n\n')
+
 
 def _vector_store(vector: list[float] | None = None) -> InMemoryPrecomputedVectorStore:
     store = InMemoryPrecomputedVectorStore()
@@ -405,7 +424,7 @@ def _vector_store(vector: list[float] | None = None) -> InMemoryPrecomputedVecto
 
 
 def _weak_vector_store() -> InMemoryPrecomputedVectorStore:
-    return _vector_store([0.5, math.sqrt(0.75), 0.0])
+    return _vector_store([0.49, math.sqrt(1 - 0.49**2), 0.0])
 
 
 def _grounded_answer() -> str:
