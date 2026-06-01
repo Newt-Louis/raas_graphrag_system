@@ -20,12 +20,15 @@ interface ChatMessage {
   role: 'user' | 'assistant'
   content: string
   citations?: Citation[]
+  responseType?: 'grounded_answer' | 'social' | 'refusal'
+  strategy?: string
   failed?: boolean
 }
 
 interface ChatCompletionResponse {
   answer: string
   strategy: string
+  response_type: 'grounded_answer' | 'social' | 'refusal'
   citations: Citation[]
 }
 
@@ -91,6 +94,8 @@ async function sendMessage() {
       role: 'assistant',
       content: result.answer,
       citations: result.citations,
+      responseType: result.response_type,
+      strategy: result.strategy,
     })
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Chat request failed.'
@@ -136,6 +141,16 @@ function errorDetail(payload: unknown, fallback: string) {
     }
   }
   return fallback
+}
+
+function responseTypeLabel(responseType: ChatMessage['responseType']) {
+  if (responseType === 'grounded_answer') {
+    return 'Document grounded'
+  }
+  if (responseType === 'refusal') {
+    return 'Outside document scope'
+  }
+  return 'Conversation'
 }
 
 function createId() {
@@ -212,6 +227,14 @@ function createId() {
         >
           <div v-if="message.role === 'assistant'" class="message-avatar">R</div>
           <div class="message-content" :class="{ failed: message.failed }">
+            <span
+              v-if="message.role === 'assistant' && message.responseType"
+              class="response-type"
+              :class="message.responseType"
+              :title="message.strategy"
+            >
+              {{ responseTypeLabel(message.responseType) }}
+            </span>
             <p>{{ message.content }}</p>
             <details v-if="message.citations?.length" class="citations">
               <summary>{{ message.citations.length }} sources</summary>
@@ -440,6 +463,20 @@ function createId() {
 .message-content p {
   margin: 0;
   white-space: pre-wrap;
+}
+
+.response-type {
+  display: inline-flex;
+  margin-bottom: 5px;
+  color: var(--muted-text);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.response-type.refusal {
+  color: var(--danger-color);
 }
 
 .message-row.user .message-content {

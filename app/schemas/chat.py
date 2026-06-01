@@ -67,5 +67,6 @@ class ChatCompletionResponse(BaseModel):
     session_id: str | None = None
     answer: str
     strategy: str
+    response_type: Literal["grounded_answer", "social", "refusal"]
     citations: list[ChatCitationResponse] = Field(default_factory=list)
     usage: dict[str, Any] = Field(default_factory=dict)

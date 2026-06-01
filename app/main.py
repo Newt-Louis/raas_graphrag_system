@@ -11,12 +11,10 @@ from app.graphrag.graph_database import get_kuzu_graph_store
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: khởi tạo DB connections
-    print("🚀 Starting GraphRAG System...")
+    print("Starting GraphRAG System...")
     get_kuzu_graph_store().ensure_schema()
     yield
-    # Shutdown: cleanup
-    print("👋 Shutting down...")
+    print("Shutting down...")
 
 
 app = FastAPI(
@@ -25,7 +23,6 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS - cho phép embed từ domain khác
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.ALLOWED_ORIGINS,
@@ -34,7 +31,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ============= API ROUTES =============
 def include_routers_automatically():
     api_dir = Path(__file__).parent / "api"
     base_module = f"{__package__}.api"
@@ -59,16 +55,11 @@ def include_routers_automatically():
 
 include_routers_automatically()
 
-# ============= STATIC FILES (Vue SPA) =============
 STATIC_DIR = settings.STATIC_DIR
 ASSETS_DIR = STATIC_DIR / "assets"
-
-# Mount assets (JS, CSS, images, fonts)
 if ASSETS_DIR.exists():
     app.mount("/assets", StaticFiles(directory=ASSETS_DIR), name="assets")
 
-
-# ============= SPA FALLBACK =============
 # Mọi route không khớp API → trả về index.html (Vue Router xử lý)
 @app.get("/{full_path:path}")
 async def serve_spa(full_path: str):

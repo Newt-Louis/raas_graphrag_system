@@ -46,6 +46,12 @@ class Settings(BaseSettings):
     EMBEDDING_DIMENSIONS: int = 384
     RETRIEVAL_MIN_SCORE: float = 0.0
 
+    # End-user chat grounding
+    CHAT_MIN_GROUNDED_SIMILARITY: float = 0.55
+    CHAT_CONTEXT_TOTAL_CHAR_LIMIT: int = 12_000
+    CHAT_CONTEXT_PER_CHUNK_CHAR_LIMIT: int = 1_800
+    CHAT_CONTEXT_MAX_BLOCKS: int = 8
+
     # Security
     SECRET_KEY: str
     JWT_ALGORITHM: str = "HS256"

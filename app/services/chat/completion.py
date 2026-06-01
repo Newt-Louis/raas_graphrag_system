@@ -5,6 +5,7 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.graphrag.ai_client import GraphRAGAIClient
 from app.graphrag.graph_database import (
     GraphChunkContext,
@@ -28,6 +29,8 @@ from app.schemas.chat import (
     ChatCompletionResponse,
 )
 from app.services.ai_gateway_runtime import build_embedding_gateway, build_llm_gateway
+from app.services.chat.behavior import ChatAssistantBehavior, DEFAULT_CHAT_BEHAVIOR
+from app.services.chat.policy import grounded_answer_messages, parse_grounded_answer, social_response
 
 
 class ChatCompletionError(RuntimeError):
@@ -53,12 +56,25 @@ class ChatCompletionService:
         *,
         vector_store=None,
         graph_store: KuzuGraphStore | None = None,
+        behavior: ChatAssistantBehavior = DEFAULT_CHAT_BEHAVIOR,
     ) -> None:
         self.db = db
         self.vector_store = vector_store or get_lancedb_vector_store()
         self.graph_store = graph_store or get_kuzu_graph_store()
+        self.behavior = behavior
 
     async def complete(self, payload: ChatCompletionRequest) -> ChatCompletionResponse:
+        if answer := social_response(payload.message, behavior=self.behavior):
+            return ChatCompletionResponse(
+                tenant_id=payload.tenant_id,
+                app_id=payload.app_id,
+                collection_id=payload.collection_id,
+                session_id=payload.session_id,
+                answer=answer,
+                strategy="social",
+                response_type="social",
+            )
+
         vector_pipeline = GraphRAGVectorDatabasePipeline(
             ai_client=GraphRAGAIClient(build_embedding_gateway(self.db)),
             vector_store=self.vector_store,
@@ -70,9 +86,9 @@ class ChatCompletionService:
                     app_id=payload.app_id,
                     collection_id=payload.collection_id,
                 ),
-                query=payload.message,
+                query=_retrieval_query(payload),
                 top_k=payload.top_k,
-                min_similarity=payload.min_similarity,
+                min_similarity=max(payload.min_similarity, settings.CHAT_MIN_GROUNDED_SIMILARITY),
             )
         )
         if not vector_result.matches:
@@ -81,8 +97,9 @@ class ChatCompletionService:
                 app_id=payload.app_id,
                 collection_id=payload.collection_id,
                 session_id=payload.session_id,
-                answer="Không tìm thấy ngữ cảnh phù hợp trong tài liệu đã nạp.",
+                answer=self.behavior.refusal_message,
                 strategy="no_context",
+                response_type="refusal",
             )
 
         graph_chunks, graph_entities = self._expand_graph_context(payload, vector_result.matches)
@@ -117,6 +134,7 @@ class ChatCompletionService:
             history=[message.model_dump() for message in payload.history],
             context_blocks=context_blocks,
             graph_entities=graph_entities,
+            behavior=self.behavior,
         )
         llm_result = await GraphRAGAIClient(
             build_llm_gateway(
@@ -131,15 +149,21 @@ class ChatCompletionService:
             session_id=payload.session_id,
             temperature=0.2,
         )
-        if not llm_result.success or not isinstance(llm_result.data, str):
+        if not llm_result.success:
             raise ChatCompletionError(llm_result.final_reason or "LLM answer synthesis failed.")
 
+        decision = parse_grounded_answer(
+            llm_result.data,
+            valid_references={citation.reference for citation in citations},
+            behavior=self.behavior,
+        )
+        used_references = set(decision.references)
         return ChatCompletionResponse(
             tenant_id=payload.tenant_id,
             app_id=payload.app_id,
             collection_id=payload.collection_id,
             session_id=payload.session_id,
-            answer=llm_result.data.strip(),
+            answer=decision.answer,
             strategy=(
                 "vector_semantic_graph"
                 if graph_entities
@@ -147,7 +171,8 @@ class ChatCompletionService:
                 if graph_chunks
                 else "vector_only"
             ),
-            citations=citations,
+            response_type=decision.response_type,
+            citations=[citation for citation in citations if citation.reference in used_references],
             usage=llm_result.usage,
         )
 
@@ -190,9 +215,9 @@ class ChatCompletionService:
 def _compact_context_blocks(
     blocks: list[_ContextBlock],
     *,
-    total_char_limit: int = 12_000,
-    per_chunk_char_limit: int = 1_800,
-    max_blocks: int = 8,
+    total_char_limit: int = settings.CHAT_CONTEXT_TOTAL_CHAR_LIMIT,
+    per_chunk_char_limit: int = settings.CHAT_CONTEXT_PER_CHUNK_CHAR_LIMIT,
+    max_blocks: int = settings.CHAT_CONTEXT_MAX_BLOCKS,
 ) -> list[_ContextBlock]:
     compacted: list[_ContextBlock] = []
     seen_chunk_ids: set[str] = set()
@@ -230,6 +255,7 @@ def _answer_messages(
     history: list[dict[str, str]],
     context_blocks: list[_ContextBlock],
     graph_entities: list[GraphEntityContext],
+    behavior: ChatAssistantBehavior = DEFAULT_CHAT_BEHAVIOR,
 ) -> list[dict[str, str]]:
     rendered_context = "\n\n".join(
         f"[{index}] source={block.filename or block.document_id}; chunk={block.chunk_id}\n{block.text}"
@@ -239,22 +265,24 @@ def _answer_messages(
         f"{entity.name} ({entity.entity_type})"
         for entity in graph_entities[:24]
     )
-    graph_summary = f"\nRelated graph entities: {rendered_entities}" if rendered_entities else ""
-    return [
-        {
-            "role": "system",
-            "content": (
-                "Answer the user only from the provided document context. "
-                "Use the same language as the user. Cite supporting sources as [n]. "
-                "If the context is insufficient, state that clearly. Do not invent facts."
-            ),
-        },
-        *history[-8:],
-        {
-            "role": "user",
-            "content": f"Document context:\n{rendered_context}{graph_summary}\n\nQuestion:\n{question}",
-        },
+    return grounded_answer_messages(
+        question=question,
+        history=history,
+        rendered_context=rendered_context,
+        rendered_entities=rendered_entities,
+        behavior=behavior,
+    )
+
+
+def _retrieval_query(payload: ChatCompletionRequest) -> str:
+    previous_questions = [
+        message.content
+        for message in payload.history[-4:]
+        if message.role == "user"
     ]
+    if not previous_questions or len(payload.message.split()) >= 8:
+        return payload.message
+    return f"{previous_questions[-1]}\nFollow-up: {payload.message}"
 
 
 def _citations(blocks: list[_ContextBlock]) -> list[ChatCitationResponse]:

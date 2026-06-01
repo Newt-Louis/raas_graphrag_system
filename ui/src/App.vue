@@ -26,9 +26,7 @@ watch(isSidebarCollapsed, (value) => {
 </script>
 
 <template>
-  <RouterView v-if="isEmbedRoute" />
-
-  <div v-else class="app-shell" :class="{ 'sidebar-collapsed': isSidebarCollapsed }">
+  <div class="app-shell" :class="{ 'sidebar-collapsed': isSidebarCollapsed }">
     <aside class="side-nav" aria-label="Primary navigation">
       <RouterLink class="brand" to="/">
         <span class="brand-mark">R</span>
@@ -56,7 +54,7 @@ watch(isSidebarCollapsed, (value) => {
       </nav>
     </aside>
 
-    <main class="main-panel">
+    <main class="main-panel" :class="{ 'main-panel-full-bleed': isEmbedRoute }">
       <RouterView />
     </main>
   </div>
@@ -252,6 +250,10 @@ watch(isSidebarCollapsed, (value) => {
   transition: padding 180ms ease;
 }
 
+.main-panel-full-bleed {
+  padding: 0;
+}
+
 @media (max-width: 760px) {
   .app-shell {
     grid-template-columns: 1fr;
@@ -268,6 +270,10 @@ watch(isSidebarCollapsed, (value) => {
 
   .main-panel {
     padding: 18px;
+  }
+
+  .main-panel-full-bleed {
+    padding: 0;
   }
 }
 </style>

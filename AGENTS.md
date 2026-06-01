@@ -354,8 +354,11 @@ Mục này ghi lại trạng thái mới nhất sau phiên làm việc ngày 29/
   - `ui/src/pages/documents_visualize/GraphVisualizationPage.vue` đã gọi graph visualize API và hiển thị graph bằng Cytoscape.js. Structure node label dùng title/excerpt/page/chunk index thay vì chỉ hiện `paragraph`, `heading` hoặc số chunk.
 - Chat GraphRAG MVP:
   - Endpoint `POST /api/v1/chat/completions` embed query qua cùng Gemini embedding gateway với ingest, search LanceDB, mở rộng context qua Kuzu semantic traversal, compact context theo budget rồi gọi LLM gateway để synthesize answer.
-  - Response chat trả answer, retrieval strategy và citation tối thiểu; không đẩy raw vector metadata/debug payload sang UI chat hoặc vào prompt LLM.
-  - `ui/src/views/EmbedChatView.vue` là màn hình chat full-page thực tế, gọi completion API, giữ history ngắn theo session và hiển thị citation mở rộng khi cần.
+  - `app/services/chat/behavior.py` là placeholder cấu hình identity/personality/style/refusal message của assistant. Sau này cần hydrate theo tenant/app/widget config thay vì để mặc định platform.
+  - `app/services/chat/policy.py` cho phép xã giao đơn giản bằng phản hồi cục bộ; câu hỏi nghiệp vụ phải qua retrieval. LLM synthesis bắt buộc trả JSON decision `answer|refuse`; backend chỉ nhận answer có citation hợp lệ, nếu không trả đúng `tôi không thể xử lý được thông tin này`.
+  - Chat dùng `CHAT_MIN_GROUNDED_SIMILARITY` riêng để không dùng vector match quá yếu dù client debug gửi threshold thấp hơn. Context budget cấu hình qua các biến `CHAT_CONTEXT_*`.
+  - Response chat trả `response_type`, answer, retrieval strategy và citation tối thiểu; không đẩy raw vector metadata/debug payload sang UI chat hoặc vào prompt LLM.
+  - `ui/src/views/EmbedChatView.vue` là màn hình chat full-page thực tế, gọi completion API, giữ history ngắn theo session, hiển thị loại phản hồi và citation mở rộng khi cần.
 - Tests:
   - Đã thêm test cho Kuzu structure/semantic graph, label visualization, traversal, visualization payload, parser ontology allowlist, runtime embedding/LLM gateway, chat completion context budget, vector visualization service và AI Gateway error behavior.
   - Lệnh kiểm tra đang pass ở thời điểm 01/06/2026:
