@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from functools import lru_cache
+
 from app.core.config import settings
 from app.graphrag.ai_client import GraphRAGAIClient
 from app.graphrag.vector_database.lancedb_store import LanceDBPrecomputedVectorStore
 from app.graphrag.vector_database.pipeline import GraphRAGVectorDatabasePipeline
 
 
+@lru_cache(maxsize=1)
 def get_lancedb_vector_store() -> LanceDBPrecomputedVectorStore:
     return LanceDBPrecomputedVectorStore(
         db_path=settings.LANCEDB_PATH,

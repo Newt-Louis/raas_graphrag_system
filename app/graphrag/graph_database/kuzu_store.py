@@ -3,7 +3,23 @@ from __future__ import annotations
 import json
 from hashlib import sha256
 from pathlib import Path
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, Sequence
+
+from llama_index.core.graph_stores.types import (
+    KG_NODES_KEY,
+    KG_RELATIONS_KEY,
+    ChunkNode,
+    EntityNode,
+    LabelledNode,
+    PropertyGraphStore,
+    Relation,
+    Triplet,
+)
+from llama_index.core.indices.property_graph import PropertyGraphIndex
+from llama_index.core.indices.property_graph.transformations import ImplicitPathExtractor
+from llama_index.core.schema import TextNode
+from llama_index.core.vector_stores.types import VectorStoreQuery
 
 from app.graphrag.graph_database.models import (
     GraphChunkContext,
@@ -27,8 +43,11 @@ class KuzuGraphStoreError(RuntimeError):
     pass
 
 
-class KuzuGraphStore:
-    """Kuzu adapter for tenant/app scoped document structure graph."""
+class KuzuGraphStore(PropertyGraphStore):
+    """Tenant-scoped LlamaIndex PropertyGraphStore bridge backed by Kuzu."""
+
+    supports_structured_queries = True
+    supports_vector_queries = False
 
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
@@ -44,64 +63,152 @@ class KuzuGraphStore:
             app_id=parsed.scope.app_id,
             collection_id=parsed.scope.collection_id,
         )
-        connection = self._connection()
         try:
-            self.ensure_schema(connection)
-            document_node_id = _document_node_id(scope, parsed.source.document_id)
-            self._upsert_document(connection, scope, document_node_id, bundle)
-
-            stored_count = 1
-            element_node_ids: dict[str, str] = {}
-            for element in parsed.elements:
-                element_node_id = _record_node_id(scope, "element", element.element_id)
-                element_node_ids[element.element_id] = element_node_id
-                self._upsert_element(connection, scope, element_node_id, bundle, element)
-                self._merge_relation(connection, "HAS_ELEMENT", document_node_id, element_node_id)
-                stored_count += 1
-
-            chunk_node_ids: dict[str, str] = {}
-            for chunk in bundle.chunks:
-                chunk_node_id = _record_node_id(scope, "chunk", chunk.chunk_id)
-                chunk_node_ids[chunk.chunk_id] = chunk_node_id
-                self._upsert_chunk(connection, scope, chunk_node_id, chunk)
-                self._merge_relation(connection, "HAS_CHUNK", document_node_id, chunk_node_id)
-                for element_id in chunk.source_element_ids:
-                    element_node_id = element_node_ids.get(element_id)
-                    if element_node_id:
-                        self._merge_relation(connection, "DERIVED_FROM", chunk_node_id, element_node_id)
-                stored_count += 1
-
-            sorted_chunks = sorted(bundle.chunks, key=lambda chunk: chunk.chunk_index)
-            for previous, current in zip(sorted_chunks, sorted_chunks[1:], strict=False):
-                self._merge_relation(
-                    connection,
-                    "NEXT_CHUNK",
-                    chunk_node_ids[previous.chunk_id],
-                    chunk_node_ids[current.chunk_id],
-                )
-            for chunk in bundle.chunks:
-                if chunk.parent_chunk_id and chunk.parent_chunk_id in chunk_node_ids:
-                    self._merge_relation(
-                        connection,
-                        "PARENT_CHUNK",
-                        chunk_node_ids[chunk.chunk_id],
-                        chunk_node_ids[chunk.parent_chunk_id],
-                    )
+            self.ensure_schema()
+            self._property_graph_index().insert_nodes(self._structure_llama_nodes(bundle))
 
             return GraphIngestResult(
                 tenant_id=scope.tenant_id,
                 app_id=scope.app_id,
                 collection_id=scope.collection_id,
                 document_id=parsed.source.document_id,
-                stored_count=stored_count,
+                stored_count=1 + len(parsed.elements) + len(bundle.chunks),
                 store_path=str(self.db_path),
             )
         except Exception as exc:
             if isinstance(exc, KuzuGraphStoreError):
                 raise
             raise KuzuGraphStoreError(f"Graph ingest failed for document {parsed.source.document_id}.") from exc
-        finally:
-            connection.close()
+
+    def _property_graph_index(self) -> PropertyGraphIndex:
+        return PropertyGraphIndex(
+            nodes=[],
+            property_graph_store=self,
+            kg_extractors=[ImplicitPathExtractor()],
+            embed_kg_nodes=False,
+            use_async=False,
+        )
+
+    def _structure_llama_nodes(self, bundle: IngestionBundle) -> list[TextNode]:
+        parsed = bundle.parsed_document
+        scope = GraphDatabaseScope(
+            tenant_id=parsed.scope.tenant_id,
+            app_id=parsed.scope.app_id,
+            collection_id=parsed.scope.collection_id,
+        )
+        document_node_id = _document_node_id(scope, parsed.source.document_id)
+        document_node = EntityNode(
+            name=document_node_id,
+            label="Document",
+            properties={
+                **_scope_params(scope),
+                "document_id": parsed.source.document_id,
+                "filename": parsed.source.filename,
+                "title": parsed.title,
+                "sha256": parsed.source.sha256,
+                "extension": parsed.source.extension,
+                "metadata": {
+                    "content_type": parsed.source.content_type,
+                    "byte_size": parsed.source.byte_size,
+                    "stored_path": str(parsed.source.stored_path) if parsed.source.stored_path else None,
+                    "warnings": bundle.warnings,
+                },
+            },
+        )
+        element_nodes = {
+            element.element_id: EntityNode(
+                name=_record_node_id(scope, "element", element.element_id),
+                label="Element",
+                properties={
+                    **_scope_params(scope),
+                    "document_id": parsed.source.document_id,
+                    "element_id": element.element_id,
+                    "element_type": element.element_type.value,
+                    "order_index": element.order,
+                    "level": element.level,
+                    "page_number": element.page_number,
+                    "sheet_name": element.sheet_name,
+                    "slide_number": element.slide_number,
+                    "text": element.text,
+                    "metadata": {
+                        "parent_path": element.parent_path,
+                        "table": element.table,
+                        "image_ref": element.image_ref,
+                        **(element.metadata or {}),
+                    },
+                },
+            )
+            for element in parsed.elements
+        }
+        chunk_node_ids = {
+            chunk.chunk_id: _record_node_id(scope, "chunk", chunk.chunk_id)
+            for chunk in bundle.chunks
+        }
+        sorted_chunks = sorted(bundle.chunks, key=lambda chunk: chunk.chunk_index)
+        next_chunk_ids = {
+            previous.chunk_id: current.chunk_id
+            for previous, current in zip(sorted_chunks, sorted_chunks[1:], strict=False)
+        }
+
+        nodes: list[TextNode] = []
+        for chunk in bundle.chunks:
+            chunk_node_id = chunk_node_ids[chunk.chunk_id]
+            chunk_elements = [
+                element_nodes[element_id]
+                for element_id in chunk.source_element_ids
+                if element_id in element_nodes
+            ]
+            relations = [
+                Relation(source_id=document_node_id, target_id=chunk_node_id, label="HAS_CHUNK"),
+                *[
+                    Relation(source_id=document_node_id, target_id=element.id, label="HAS_ELEMENT")
+                    for element in chunk_elements
+                ],
+                *[
+                    Relation(source_id=chunk_node_id, target_id=element.id, label="DERIVED_FROM")
+                    for element in chunk_elements
+                ],
+            ]
+            next_chunk_id = next_chunk_ids.get(chunk.chunk_id)
+            if next_chunk_id:
+                relations.append(
+                    Relation(
+                        source_id=chunk_node_id,
+                        target_id=chunk_node_ids[next_chunk_id],
+                        label="NEXT_CHUNK",
+                    )
+                )
+            if chunk.parent_chunk_id and chunk.parent_chunk_id in chunk_node_ids:
+                relations.append(
+                    Relation(
+                        source_id=chunk_node_id,
+                        target_id=chunk_node_ids[chunk.parent_chunk_id],
+                        label="PARENT_CHUNK",
+                    )
+                )
+            nodes.append(
+                TextNode(
+                    id_=chunk_node_id,
+                    text=chunk.text,
+                    metadata={
+                        **_scope_params(scope),
+                        "graph_document_id": chunk.document_id,
+                        "chunk_id": chunk.chunk_id,
+                        "chunk_index": chunk.chunk_index,
+                        "strategy": chunk.strategy.value,
+                        "parent_chunk_id": chunk.parent_chunk_id,
+                        "is_embeddable": chunk.is_embeddable,
+                        "content_hash": chunk.content_hash,
+                        "metadata": {
+                            "source_element_ids": chunk.source_element_ids,
+                            **(chunk.metadata or {}),
+                        },
+                        KG_NODES_KEY: [document_node, *chunk_elements],
+                        KG_RELATIONS_KEY: relations,
+                    },
+                )
+            )
+        return nodes
 
     def chunk_context(
         self,
@@ -109,26 +216,14 @@ class KuzuGraphStore:
         scope: GraphDatabaseScope,
         chunk_ids: list[str],
     ) -> GraphContextResult:
-        connection = self._connection()
         try:
-            self.ensure_schema(connection)
-            chunks = [
-                context
-                for chunk_id in dict.fromkeys(chunk_ids)
-                if (context := self._chunk_context(connection, scope, chunk_id)) is not None
-            ]
-            return GraphContextResult(
-                tenant_id=scope.tenant_id,
-                app_id=scope.app_id,
-                collection_id=scope.collection_id,
-                chunks=chunks,
-            )
+            from app.graphrag.graph_database.query_engine import LlamaIndexGraphQueryEngine
+
+            return LlamaIndexGraphQueryEngine(self).chunk_context(scope=scope, chunk_ids=chunk_ids)
         except Exception as exc:
             if isinstance(exc, KuzuGraphStoreError):
                 raise
             raise KuzuGraphStoreError("Graph context query failed.") from exc
-        finally:
-            connection.close()
 
     def persist_semantic_extraction(
         self,
@@ -142,12 +237,37 @@ class KuzuGraphStore:
         try:
             self.ensure_schema(connection)
             chunk_node_id = _record_node_id(scope, "chunk", chunk_id)
+            context = self._chunk_context(connection, scope, chunk_id)
+            if context is None:
+                raise KuzuGraphStoreError(f"Chunk {chunk_id} does not exist in the scoped graph.")
+            entity_nodes: list[EntityNode] = []
+            relations: list[Relation] = []
             entity_node_ids: dict[str, str] = {}
             for entity in extraction.entities:
                 entity_node_id = _entity_node_id(scope, entity.entity_type, entity.normalized_name)
                 entity_node_ids[entity.local_id] = entity_node_id
-                self._upsert_entity(connection, scope, entity_node_id, entity)
-                self._merge_mention(connection, entity_node_id, chunk_node_id, document_id, chunk_id)
+                entity_nodes.append(
+                    EntityNode(
+                        name=entity_node_id,
+                        label="Entity",
+                        properties={
+                            **_scope_params(scope),
+                            "entity_type": entity.entity_type,
+                            "name": entity.name,
+                            "normalized_name": entity.normalized_name,
+                            "description": entity.description,
+                            "metadata": entity.metadata,
+                        },
+                    )
+                )
+                relations.append(
+                    Relation(
+                        source_id=entity_node_id,
+                        target_id=chunk_node_id,
+                        label="MENTIONED_IN",
+                        properties={"document_id": document_id, "chunk_id": chunk_id},
+                    )
+                )
 
             relation_count = 0
             for relation in extraction.relations:
@@ -155,8 +275,35 @@ class KuzuGraphStore:
                 target_id = entity_node_ids.get(relation.target_id)
                 if source_id is None or target_id is None:
                     continue
-                self._merge_semantic_relation(connection, source_id, target_id, relation)
+                relations.append(
+                    Relation(
+                        source_id=source_id,
+                        target_id=target_id,
+                        label="SEMANTIC_RELATION",
+                        properties={
+                            "relation_type": relation.relation_type,
+                            "description": relation.description,
+                            "confidence": relation.confidence,
+                            "metadata": relation.metadata,
+                        },
+                    )
+                )
                 relation_count += 1
+            self._property_graph_index().insert_nodes(
+                [
+                    TextNode(
+                        id_=chunk_node_id,
+                        text=context.text,
+                        metadata={
+                            **_scope_params(scope),
+                            "graph_document_id": document_id,
+                            "chunk_id": chunk_id,
+                            KG_NODES_KEY: entity_nodes,
+                            KG_RELATIONS_KEY: relations,
+                        },
+                    )
+                ]
+            )
             return GraphSemanticPersistResult(
                 entity_count=len(entity_node_ids),
                 relation_count=relation_count,
@@ -176,38 +323,18 @@ class KuzuGraphStore:
         entity_names: list[str],
         hops: int = 2,
     ) -> GraphTraversalResult:
-        connection = self._connection()
         try:
-            self.ensure_schema(connection)
-            seed_ids: list[str] = []
-            for name in dict.fromkeys(entity_names):
-                normalized_name = _normalized_name(name)
-                if not normalized_name:
-                    continue
-                rows = _rows(
-                    connection.execute(
-                        """
-                        MATCH (e:Entity)
-                        WHERE e.tenant_id = $tenant_id
-                          AND e.app_id = $app_id
-                          AND e.collection_id = $collection_id
-                          AND e.normalized_name CONTAINS $name
-                        RETURN e.id
-                        """,
-                        {
-                            **_scope_params(scope),
-                            "name": normalized_name,
-                        },
-                    )
-                )
-                seed_ids.extend(str(row[0]) for row in rows)
-            return self._semantic_context(connection, scope, seed_ids, hops=hops)
+            from app.graphrag.graph_database.query_engine import LlamaIndexGraphQueryEngine
+
+            return LlamaIndexGraphQueryEngine(self).entity_context(
+                scope=scope,
+                entity_names=entity_names,
+                hops=hops,
+            )
         except Exception as exc:
             if isinstance(exc, KuzuGraphStoreError):
                 raise
             raise KuzuGraphStoreError("Semantic entity context query failed.") from exc
-        finally:
-            connection.close()
 
     def semantic_context_for_chunks(
         self,
@@ -216,18 +343,18 @@ class KuzuGraphStore:
         chunk_ids: list[str],
         hops: int = 1,
     ) -> GraphTraversalResult:
-        connection = self._connection()
         try:
-            self.ensure_schema(connection)
-            chunk_node_ids = [_record_node_id(scope, "chunk", chunk_id) for chunk_id in dict.fromkeys(chunk_ids)]
-            seed_ids = self._seed_entity_ids_for_chunks(connection, chunk_node_ids)
-            return self._semantic_context(connection, scope, seed_ids, hops=hops)
+            from app.graphrag.graph_database.query_engine import LlamaIndexGraphQueryEngine
+
+            return LlamaIndexGraphQueryEngine(self).semantic_context_for_chunks(
+                scope=scope,
+                chunk_ids=chunk_ids,
+                hops=hops,
+            )
         except Exception as exc:
             if isinstance(exc, KuzuGraphStoreError):
                 raise
             raise KuzuGraphStoreError("Semantic chunk context query failed.") from exc
-        finally:
-            connection.close()
 
     def graph_visualization(
         self,
@@ -368,6 +495,265 @@ class KuzuGraphStore:
             raise KuzuGraphStoreError(f"Graph delete failed for document {document_id}.") from exc
         finally:
             connection.close()
+
+    @property
+    def client(self):
+        """Expose a Kuzu connection for LlamaIndex structured-query integrations."""
+        return self._connection()
+
+    def upsert_nodes(self, nodes: Sequence[LabelledNode]) -> None:
+        connection = self._connection()
+        try:
+            self.ensure_schema(connection)
+            for node in nodes:
+                properties = dict(node.properties or {})
+                scope = _scope_from_properties(properties)
+                if isinstance(node, ChunkNode):
+                    chunk = SimpleNamespace(
+                        document_id=str(properties.get("graph_document_id") or properties.get("document_id") or ""),
+                        chunk_id=str(properties.get("chunk_id") or node.id),
+                        chunk_index=int(properties.get("chunk_index") or 0),
+                        text=node.text,
+                        strategy=SimpleNamespace(value=str(properties.get("strategy") or "")),
+                        parent_chunk_id=properties.get("parent_chunk_id"),
+                        is_embeddable=bool(properties.get("is_embeddable", True)),
+                        content_hash=str(properties.get("content_hash") or ""),
+                        source_element_ids=list((properties.get("metadata") or {}).get("source_element_ids") or []),
+                        metadata=properties,
+                    )
+                    self._upsert_chunk(connection, scope, node.id, chunk)
+                    continue
+                if not isinstance(node, EntityNode):
+                    continue
+                if node.label == "Document":
+                    self._upsert_llama_document(connection, scope, node)
+                elif node.label == "Element":
+                    self._upsert_llama_element(connection, scope, node)
+                else:
+                    entity = SimpleNamespace(
+                        entity_type=str(properties.get("entity_type") or node.label),
+                        name=str(properties.get("name") or node.name),
+                        normalized_name=str(properties.get("normalized_name") or _normalized_name(node.name)),
+                        description=str(properties.get("description") or ""),
+                        metadata=dict(properties.get("metadata") or {}),
+                    )
+                    self._upsert_entity(connection, scope, node.id, entity)
+        finally:
+            connection.close()
+
+    def upsert_relations(self, relations: list[Relation]) -> None:
+        connection = self._connection()
+        try:
+            self.ensure_schema(connection)
+            for relation in relations:
+                properties = dict(relation.properties or {})
+                if relation.label in _RELATION_ENDPOINTS:
+                    self._merge_relation(connection, relation.label, relation.source_id, relation.target_id)
+                elif relation.label == "MENTIONED_IN":
+                    self._merge_mention(
+                        connection,
+                        relation.source_id,
+                        relation.target_id,
+                        str(properties.get("document_id") or ""),
+                        str(properties.get("chunk_id") or ""),
+                    )
+                elif relation.label == "SEMANTIC_RELATION":
+                    semantic_relation = SimpleNamespace(
+                        relation_type=str(properties.get("relation_type") or "RELATED_TO"),
+                        description=str(properties.get("description") or ""),
+                        confidence=float(properties.get("confidence") or 0.0),
+                        metadata=dict(properties.get("metadata") or {}),
+                    )
+                    self._merge_semantic_relation(
+                        connection,
+                        relation.source_id,
+                        relation.target_id,
+                        semantic_relation,
+                    )
+        finally:
+            connection.close()
+
+    def get(
+        self,
+        properties: dict | None = None,
+        ids: list[str] | None = None,
+    ) -> list[LabelledNode]:
+        connection = self._connection()
+        try:
+            self.ensure_schema(connection)
+            nodes: list[LabelledNode] = []
+            for label in ("Document", "Element", "Chunk", "Entity"):
+                where = ""
+                params: dict[str, Any] = {}
+                if ids is not None:
+                    where = "WHERE n.id IN $ids"
+                    params["ids"] = ids
+                rows = _rows(
+                    connection.execute(
+                        f"MATCH (n:{label}) {where} RETURN n.id, n.metadata_json, "
+                        + ("n.text" if label == "Chunk" else "''"),
+                        params,
+                    )
+                )
+                for row in rows:
+                    node_properties = _dict(row[1])
+                    if properties and any(node_properties.get(key) != value for key, value in properties.items()):
+                        continue
+                    if label == "Chunk":
+                        nodes.append(ChunkNode(id_=str(row[0]), text=str(row[2] or ""), properties=node_properties))
+                    else:
+                        nodes.append(EntityNode(name=str(row[0]), label=label, properties=node_properties))
+            return nodes
+        finally:
+            connection.close()
+
+    def get_triplets(
+        self,
+        entity_names: list[str] | None = None,
+        relation_names: list[str] | None = None,
+        properties: dict | None = None,
+        ids: list[str] | None = None,
+    ) -> list[Triplet]:
+        connection = self._connection()
+        try:
+            self.ensure_schema(connection)
+            triplets: list[Triplet] = []
+            for relation_table, (source_label, target_label) in _ALL_RELATION_ENDPOINTS.items():
+                rows = _rows(
+                    connection.execute(
+                        f"MATCH (source:{source_label})-[r:{relation_table}]->(target:{target_label}) "
+                        "RETURN source.id, target.id"
+                    )
+                )
+                for row in rows:
+                    source_id, target_id = str(row[0]), str(row[1])
+                    if ids and source_id not in ids and target_id not in ids:
+                        continue
+                    relation = Relation(source_id=source_id, target_id=target_id, label=relation_table)
+                    if relation_names and relation.label not in relation_names:
+                        continue
+                    nodes = self.get(ids=[source_id, target_id])
+                    by_id = {node.id: node for node in nodes}
+                    if source_id not in by_id or target_id not in by_id:
+                        continue
+                    triplets.append((by_id[source_id], relation, by_id[target_id]))
+            return triplets
+        finally:
+            connection.close()
+
+    def get_rel_map(
+        self,
+        graph_nodes: list[LabelledNode],
+        depth: int = 2,
+        limit: int = 30,
+        ignore_rels: list[str] | None = None,
+    ) -> list[Triplet]:
+        ignored = set(ignore_rels or [])
+        frontier = {node.id for node in graph_nodes}
+        seen = set(frontier)
+        selected: list[Triplet] = []
+        for _ in range(max(0, min(depth, 5))):
+            if not frontier or len(selected) >= limit:
+                break
+            current = [
+                triplet
+                for triplet in self.get_triplets(ids=list(frontier))
+                if triplet[1].label not in ignored
+            ]
+            selected.extend(current[: max(0, limit - len(selected))])
+            next_frontier = {
+                node.id
+                for source, _, target in current
+                for node in (source, target)
+                if node.id not in seen
+            }
+            seen.update(next_frontier)
+            frontier = next_frontier
+        return selected
+
+    def delete(
+        self,
+        entity_names: list[str] | None = None,
+        relation_names: list[str] | None = None,
+        properties: dict | None = None,
+        ids: list[str] | None = None,
+    ) -> None:
+        connection = self._connection()
+        try:
+            self.ensure_schema(connection)
+            selected_ids = list(ids or entity_names or [])
+            for node_id in selected_ids:
+                for label in ("Document", "Element", "Chunk", "Entity"):
+                    connection.execute(f"MATCH (n:{label} {{id: $id}}) DETACH DELETE n", {"id": node_id})
+        finally:
+            connection.close()
+
+    def structured_query(self, query: str, param_map: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        connection = self._connection()
+        try:
+            result = connection.execute(query, param_map or {})
+            column_names = result.get_column_names()
+            return [dict(zip(column_names, row, strict=True)) for row in result]
+        finally:
+            connection.close()
+
+    def vector_query(self, query: VectorStoreQuery, **kwargs: Any) -> tuple[list[LabelledNode], list[float]]:
+        """Vector retrieval stays in the LlamaIndex LanceDB adapter."""
+        return [], []
+
+    def get_schema(self, refresh: bool = False) -> dict[str, list[str]]:
+        return {
+            "nodes": ["Document", "Element", "Chunk", "Entity"],
+            "relations": list(_ALL_RELATION_ENDPOINTS),
+        }
+
+    def _upsert_llama_document(self, connection, scope: GraphDatabaseScope, node: EntityNode) -> None:
+        properties = dict(node.properties or {})
+        connection.execute(
+            """
+            MERGE (d:Document {id: $id})
+            SET d.tenant_id = $tenant_id, d.app_id = $app_id, d.collection_id = $collection_id,
+                d.document_id = $document_id, d.filename = $filename, d.title = $title,
+                d.sha256 = $sha256, d.extension = $extension, d.metadata_json = $metadata_json
+            """,
+            {
+                "id": node.id,
+                **_scope_params(scope),
+                "document_id": str(properties.get("document_id") or ""),
+                "filename": str(properties.get("filename") or ""),
+                "title": str(properties.get("title") or ""),
+                "sha256": str(properties.get("sha256") or ""),
+                "extension": str(properties.get("extension") or ""),
+                "metadata_json": _json(properties),
+            },
+        )
+
+    def _upsert_llama_element(self, connection, scope: GraphDatabaseScope, node: EntityNode) -> None:
+        properties = dict(node.properties or {})
+        connection.execute(
+            """
+            MERGE (e:Element {id: $id})
+            SET e.tenant_id = $tenant_id, e.app_id = $app_id, e.collection_id = $collection_id,
+                e.document_id = $document_id, e.element_id = $element_id, e.element_type = $element_type,
+                e.order_index = $order_index, e.level = $level, e.page_number = $page_number,
+                e.sheet_name = $sheet_name, e.slide_number = $slide_number, e.text = $text,
+                e.metadata_json = $metadata_json
+            """,
+            {
+                "id": node.id,
+                **_scope_params(scope),
+                "document_id": str(properties.get("document_id") or ""),
+                "element_id": str(properties.get("element_id") or ""),
+                "element_type": str(properties.get("element_type") or ""),
+                "order_index": int(properties.get("order_index") or 0),
+                "level": int(properties.get("level") or 0),
+                "page_number": int(properties.get("page_number") or 0),
+                "sheet_name": str(properties.get("sheet_name") or ""),
+                "slide_number": int(properties.get("slide_number") or 0),
+                "text": str(properties.get("text") or ""),
+                "metadata_json": _json(properties),
+            },
+        )
 
     def ensure_schema(self, connection=None) -> None:
         owns_connection = connection is None
@@ -1085,6 +1471,12 @@ _RELATION_ENDPOINTS = {
     "PARENT_CHUNK": ("Chunk", "Chunk"),
 }
 
+_ALL_RELATION_ENDPOINTS = {
+    **_RELATION_ENDPOINTS,
+    "MENTIONED_IN": ("Entity", "Chunk"),
+    "SEMANTIC_RELATION": ("Entity", "Entity"),
+}
+
 
 def _document_node_id(scope: GraphDatabaseScope, document_id: str) -> str:
     return _record_node_id(scope, "document", document_id)
@@ -1110,6 +1502,18 @@ def _scope_params(scope: GraphDatabaseScope) -> dict[str, str]:
         "app_id": scope.app_id,
         "collection_id": _collection_value(scope.collection_id),
     }
+
+
+def _scope_from_properties(properties: dict[str, Any]) -> GraphDatabaseScope:
+    tenant_id = str(properties.get("tenant_id") or "").strip()
+    app_id = str(properties.get("app_id") or "").strip()
+    if not tenant_id or not app_id:
+        raise KuzuGraphStoreError("LlamaIndex graph node is missing tenant/app scope.")
+    return GraphDatabaseScope(
+        tenant_id=tenant_id,
+        app_id=app_id,
+        collection_id=str(properties.get("collection_id") or "") or None,
+    )
 
 
 def _document_where(scope: GraphDatabaseScope, document_id: str | None, *, alias: str) -> tuple[str, dict[str, Any]]:
