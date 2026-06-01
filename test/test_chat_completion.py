@@ -3,6 +3,8 @@ from __future__ import annotations
 import inspect
 import math
 import unittest
+from dataclasses import replace
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from app.ai_gateway.base_rotator import RotationResult
@@ -23,13 +25,38 @@ from app.services.chat.completion import (
     _ContextBlock,
     _compact_context_blocks,
 )
-from app.services.chat.behavior import REFUSAL_MESSAGE
-from app.services.chat.policy import parse_grounded_answer
+from app.services.chat.behavior import DEFAULT_CHAT_BEHAVIOR
+from app.services.chat.policy import parse_chat_response
+
+
+TEST_REFUSAL = "Fixed refusal."
+TEST_BEHAVIOR = replace(DEFAULT_CHAT_BEHAVIOR, refusal_responses=(TEST_REFUSAL,))
 
 
 class FakeSession:
     def get(self, model, record_id):
         return None
+
+
+class FakeScalarResult:
+    def __init__(self, rows) -> None:
+        self.rows = rows
+
+    def all(self):
+        return self.rows
+
+
+class FakeProfileSession(FakeSession):
+    def __init__(self, *retrieval_top_k_values) -> None:
+        self.retrieval_top_k_values = retrieval_top_k_values
+
+    def scalars(self, statement):
+        return FakeScalarResult(
+            [
+                SimpleNamespace(retrieval_top_k=retrieval_top_k)
+                for retrieval_top_k in self.retrieval_top_k_values
+            ]
+        )
 
 
 class FakeEmbeddingGateway:
@@ -43,18 +70,15 @@ class FakeEmbeddingGateway:
 
 
 class FakeLLMGateway:
-    def __init__(self, data=None) -> None:
-        self.messages = []
-        self.data = data or (
-            '{"decision":"answer","answer":"The recommendation system uses LanceDB. [1]",'
-            '"used_references":[1]}'
-        )
+    def __init__(self, *outputs) -> None:
+        self.calls = []
+        self.outputs = list(outputs or [_grounded_answer()])
 
     async def complete(self, messages, **kwargs):
-        self.messages = messages
+        self.calls.append({"messages": messages, "kwargs": kwargs})
         return RotationResult(
             success=True,
-            data=self.data,
+            data=self.outputs.pop(0),
             profile_id="llm-profile",
             used_model="gemini-2.5-flash",
             usage={"total_tokens": 42},
@@ -101,6 +125,7 @@ class ChatCompletionServiceTests(unittest.IsolatedAsyncioTestCase):
             FakeSession(),
             vector_store=store,
             graph_store=FakeGraphStore(),
+            behavior=TEST_BEHAVIOR,
         )
 
         with (
@@ -120,14 +145,45 @@ class ChatCompletionServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.response_type, "grounded_answer")
         self.assertEqual(response.citations[0].filename, "architecture.txt")
         self.assertEqual(response.usage["total_tokens"], 42)
-        self.assertIn("LanceDB", llm_gateway.messages[-1]["content"])
-        self.assertIn("Return only valid JSON", llm_gateway.messages[0]["content"])
+        self.assertIn("LanceDB", llm_gateway.calls[-1]["messages"][-1]["content"])
+        self.assertIn("Return only valid JSON", llm_gateway.calls[-1]["messages"][0]["content"])
 
-    async def test_social_message_does_not_call_embedding_or_llm(self) -> None:
+    async def test_social_message_embeds_first_then_uses_one_llm_call(self) -> None:
+        llm_gateway = FakeLLMGateway(
+            '{"decision":"social","answer":"Xin chào. Hôm nay tôi có thể giúp gì cho bạn?",'
+            '"used_references":[],'
+            '"self_check":"pass"}'
+        )
         service = ChatCompletionService(
             FakeSession(),
             vector_store=InMemoryPrecomputedVectorStore(),
             graph_store=FakeGraphStore(),
+            behavior=TEST_BEHAVIOR,
+        )
+
+        with (
+            patch("app.services.chat.completion.build_embedding_gateway", return_value=FakeEmbeddingGateway()),
+            patch("app.services.chat.completion.build_llm_gateway", return_value=llm_gateway),
+        ):
+            response = await service.complete(
+                ChatCompletionRequest(
+                    tenant_id="tenant-a",
+                    app_id="app-a",
+                    message="Xin chào",
+                )
+            )
+
+        self.assertEqual(response.strategy, "embedding_first_social")
+        self.assertEqual(response.response_type, "social")
+        self.assertIn("Xin chào", response.answer)
+        self.assertEqual(len(llm_gateway.calls), 1)
+
+    async def test_restricted_topic_is_rejected_before_any_model_call(self) -> None:
+        service = ChatCompletionService(
+            FakeSession(),
+            vector_store=InMemoryPrecomputedVectorStore(),
+            graph_store=FakeGraphStore(),
+            behavior=TEST_BEHAVIOR,
         )
 
         with (
@@ -138,24 +194,25 @@ class ChatCompletionServiceTests(unittest.IsolatedAsyncioTestCase):
                 ChatCompletionRequest(
                     tenant_id="tenant-a",
                     app_id="app-a",
-                    message="Xin chào",
+                    message="Bạn nghĩ gì về chính phủ?",
                 )
             )
 
-        self.assertEqual(response.strategy, "social")
-        self.assertEqual(response.response_type, "social")
-        self.assertIn("Xin chào", response.answer)
+        self.assertEqual(response.strategy, "policy_refusal")
+        self.assertEqual(response.answer, TEST_REFUSAL)
 
-    async def test_no_retrieval_context_returns_exact_refusal_without_llm(self) -> None:
+    async def test_no_retrieval_context_allows_one_llm_call_to_refuse(self) -> None:
         service = ChatCompletionService(
             FakeSession(),
             vector_store=InMemoryPrecomputedVectorStore(),
             graph_store=FakeGraphStore(),
+            behavior=TEST_BEHAVIOR,
         )
+        llm_gateway = FakeLLMGateway(_refusal())
 
         with (
             patch("app.services.chat.completion.build_embedding_gateway", return_value=FakeEmbeddingGateway()),
-            patch("app.services.chat.completion.build_llm_gateway", side_effect=AssertionError),
+            patch("app.services.chat.completion.build_llm_gateway", return_value=llm_gateway),
         ):
             response = await service.complete(
                 ChatCompletionRequest(
@@ -165,20 +222,23 @@ class ChatCompletionServiceTests(unittest.IsolatedAsyncioTestCase):
                 )
             )
 
-        self.assertEqual(response.strategy, "no_context")
+        self.assertEqual(response.strategy, "embedding_first_no_context")
         self.assertEqual(response.response_type, "refusal")
-        self.assertEqual(response.answer, REFUSAL_MESSAGE)
+        self.assertEqual(response.answer, TEST_REFUSAL)
+        self.assertEqual(len(llm_gateway.calls), 1)
 
     async def test_chat_grounding_threshold_rejects_weak_match(self) -> None:
         service = ChatCompletionService(
             FakeSession(),
             vector_store=_weak_vector_store(),
             graph_store=FakeGraphStore(),
+            behavior=TEST_BEHAVIOR,
         )
+        llm_gateway = FakeLLMGateway(_refusal())
 
         with (
             patch("app.services.chat.completion.build_embedding_gateway", return_value=FakeEmbeddingGateway()),
-            patch("app.services.chat.completion.build_llm_gateway", side_effect=AssertionError),
+            patch("app.services.chat.completion.build_llm_gateway", return_value=llm_gateway),
         ):
             response = await service.complete(
                 ChatCompletionRequest(
@@ -186,21 +246,22 @@ class ChatCompletionServiceTests(unittest.IsolatedAsyncioTestCase):
                     app_id="app-a",
                     collection_id="docs",
                     message="Explain an unrelated topic.",
-                    min_similarity=0.1,
                 )
             )
 
-        self.assertEqual(response.strategy, "no_context")
-        self.assertEqual(response.answer, REFUSAL_MESSAGE)
+        self.assertEqual(response.strategy, "embedding_first_no_context")
+        self.assertEqual(response.answer, TEST_REFUSAL)
 
     async def test_llm_answer_without_valid_references_is_rejected(self) -> None:
         service = ChatCompletionService(
             FakeSession(),
             vector_store=_vector_store(),
             graph_store=FakeGraphStore(),
+            behavior=TEST_BEHAVIOR,
         )
         llm_gateway = FakeLLMGateway(
-            '{"decision":"answer","answer":"Unsupported answer.","used_references":[]}'
+            '{"decision":"grounded_answer","answer":"Unsupported answer.",'
+            '"used_references":[],"self_check":"pass"}'
         )
 
         with (
@@ -217,7 +278,7 @@ class ChatCompletionServiceTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(response.response_type, "refusal")
-        self.assertEqual(response.answer, REFUSAL_MESSAGE)
+        self.assertEqual(response.answer, TEST_REFUSAL)
         self.assertEqual(response.citations, [])
 
     def test_context_compaction_deduplicates_chunks_and_applies_budget(self) -> None:
@@ -241,16 +302,80 @@ class ChatCompletionServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(parameter.default.default)
 
-    def test_grounded_answer_parser_rejects_non_json_output(self) -> None:
-        decision = parse_grounded_answer("A plausible but unstructured answer.", valid_references={1})
+    def test_chat_response_parser_rejects_non_json_output(self) -> None:
+        decision = parse_chat_response(
+            "A plausible but unstructured answer.",
+            valid_references={1},
+            allow_grounded_answer=True,
+            behavior=TEST_BEHAVIOR,
+        )
 
         self.assertEqual(decision.response_type, "refusal")
-        self.assertEqual(decision.answer, REFUSAL_MESSAGE)
+        self.assertEqual(decision.answer, TEST_REFUSAL)
 
-    def test_grounded_answer_parser_rejects_unknown_inline_citation(self) -> None:
-        decision = parse_grounded_answer(
-            '{"decision":"answer","answer":"Unsupported citation [999]","used_references":[1]}',
+    def test_chat_response_parser_rejects_unknown_inline_citation(self) -> None:
+        decision = parse_chat_response(
+            '{"decision":"grounded_answer","answer":"Unsupported citation [999]",'
+            '"used_references":[1],"self_check":"pass"}',
             valid_references={1},
+            allow_grounded_answer=True,
+            behavior=TEST_BEHAVIOR,
+        )
+
+        self.assertEqual(decision.response_type, "refusal")
+
+    def test_chat_response_parser_rejects_social_answer_when_self_check_fails(self) -> None:
+        decision = parse_chat_response(
+            '{"decision":"social","answer":"Winter flowers always bloom.",'
+            '"used_references":[],"self_check":"fail"}',
+            valid_references=set(),
+            allow_grounded_answer=False,
+            behavior=TEST_BEHAVIOR,
+        )
+
+        self.assertEqual(decision.response_type, "refusal")
+
+    def test_retrieval_top_k_uses_embedding_profile_value(self) -> None:
+        service = ChatCompletionService(
+            FakeProfileSession(9),
+            behavior=TEST_BEHAVIOR,
+        )
+
+        self.assertEqual(service._retrieval_top_k(), 9)
+
+    def test_retrieval_top_k_falls_back_when_profile_value_is_zero(self) -> None:
+        service = ChatCompletionService(
+            FakeProfileSession(0),
+            behavior=TEST_BEHAVIOR,
+        )
+
+        self.assertEqual(service._retrieval_top_k(), TEST_BEHAVIOR.default_retrieval_top_k)
+
+    def test_retrieval_top_k_does_not_reuse_older_profile_value(self) -> None:
+        service = ChatCompletionService(
+            FakeProfileSession(None, 20),
+            behavior=TEST_BEHAVIOR,
+        )
+
+        self.assertEqual(service._retrieval_top_k(), TEST_BEHAVIOR.default_retrieval_top_k)
+
+    def test_chat_response_parser_rejects_social_answer_that_contains_restricted_topic(self) -> None:
+        decision = parse_chat_response(
+            '{"decision":"social","answer":"Hãy bàn thêm về chính phủ.",'
+            '"used_references":[],"self_check":"pass"}',
+            valid_references=set(),
+            allow_grounded_answer=False,
+            behavior=TEST_BEHAVIOR,
+        )
+
+        self.assertEqual(decision.response_type, "refusal")
+
+    def test_chat_response_parser_rejects_grounded_answer_without_context(self) -> None:
+        decision = parse_chat_response(
+            _grounded_answer(),
+            valid_references=set(),
+            allow_grounded_answer=False,
+            behavior=TEST_BEHAVIOR,
         )
 
         self.assertEqual(decision.response_type, "refusal")
@@ -281,6 +406,17 @@ def _vector_store(vector: list[float] | None = None) -> InMemoryPrecomputedVecto
 
 def _weak_vector_store() -> InMemoryPrecomputedVectorStore:
     return _vector_store([0.5, math.sqrt(0.75), 0.0])
+
+
+def _grounded_answer() -> str:
+    return (
+        '{"decision":"grounded_answer","answer":"The recommendation system uses LanceDB. [1]",'
+        '"used_references":[1],"self_check":"pass"}'
+    )
+
+
+def _refusal() -> str:
+    return '{"decision":"refuse","answer":"","used_references":[],"self_check":"pass"}'
 
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from uuid import UUID
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -22,6 +23,7 @@ from app.graphrag.vector_database import (
     VectorQueryRequest,
 )
 from app.graphrag.vector_database.factory import get_lancedb_vector_store
+from app.models.ai_gateway import EmbeddingModelProfile
 from app.models.documents import Document
 from app.schemas.chat import (
     ChatCitationResponse,
@@ -29,8 +31,12 @@ from app.schemas.chat import (
     ChatCompletionResponse,
 )
 from app.services.ai_gateway_runtime import build_embedding_gateway, build_llm_gateway
-from app.services.chat.behavior import ChatAssistantBehavior, DEFAULT_CHAT_BEHAVIOR
-from app.services.chat.policy import grounded_answer_messages, parse_grounded_answer, social_response
+from app.services.chat.behavior import ChatAssistantBehavior, DEFAULT_CHAT_BEHAVIOR, refusal_response
+from app.services.chat.policy import (
+    chat_response_messages,
+    has_restricted_topic,
+    parse_chat_response,
+)
 
 
 class ChatCompletionError(RuntimeError):
@@ -64,15 +70,15 @@ class ChatCompletionService:
         self.behavior = behavior
 
     async def complete(self, payload: ChatCompletionRequest) -> ChatCompletionResponse:
-        if answer := social_response(payload.message, behavior=self.behavior):
+        if has_restricted_topic(payload.message, behavior=self.behavior):
             return ChatCompletionResponse(
                 tenant_id=payload.tenant_id,
                 app_id=payload.app_id,
                 collection_id=payload.collection_id,
                 session_id=payload.session_id,
-                answer=answer,
-                strategy="social",
-                response_type="social",
+                answer=refusal_response(self.behavior),
+                strategy="policy_refusal",
+                response_type="refusal",
             )
 
         vector_pipeline = GraphRAGVectorDatabasePipeline(
@@ -87,22 +93,17 @@ class ChatCompletionService:
                     collection_id=payload.collection_id,
                 ),
                 query=_retrieval_query(payload),
-                top_k=payload.top_k,
-                min_similarity=max(payload.min_similarity, settings.CHAT_MIN_GROUNDED_SIMILARITY),
+                top_k=self._retrieval_top_k(),
+                min_similarity=0.0,
             )
         )
-        if not vector_result.matches:
-            return ChatCompletionResponse(
-                tenant_id=payload.tenant_id,
-                app_id=payload.app_id,
-                collection_id=payload.collection_id,
-                session_id=payload.session_id,
-                answer=self.behavior.refusal_message,
-                strategy="no_context",
-                response_type="refusal",
-            )
+        grounded_matches = [
+            match
+            for match in vector_result.matches
+            if match.similarity >= self.behavior.grounded_min_similarity
+        ]
 
-        graph_chunks, graph_entities = self._expand_graph_context(payload, vector_result.matches)
+        graph_chunks, graph_entities = self._expand_graph_context(payload, grounded_matches)
         context_blocks = _compact_context_blocks(
             [
                 *[
@@ -114,7 +115,7 @@ class ChatCompletionService:
                         filename=self._document_filename(match.document_id, match.metadata),
                         similarity=match.similarity,
                     )
-                    for match in vector_result.matches
+                    for match in grounded_matches
                 ],
                 *[
                     _ContextBlock(
@@ -134,27 +135,31 @@ class ChatCompletionService:
             history=[message.model_dump() for message in payload.history],
             context_blocks=context_blocks,
             graph_entities=graph_entities,
+            has_document_context=bool(context_blocks),
             behavior=self.behavior,
         )
-        llm_result = await GraphRAGAIClient(
+        llm_client = GraphRAGAIClient(
             build_llm_gateway(
                 self.db,
                 tenant_id=payload.tenant_id,
                 app_id=payload.app_id,
             )
-        ).synthesize_answer(
+        )
+        llm_result = await llm_client.synthesize_answer(
             messages,
             tenant_id=payload.tenant_id,
             app_id=payload.app_id,
             session_id=payload.session_id,
-            temperature=0.2,
+            temperature=self.behavior.answer_temperature,
+            max_tokens=self.behavior.answer_max_tokens,
         )
         if not llm_result.success:
             raise ChatCompletionError(llm_result.final_reason or "LLM answer synthesis failed.")
 
-        decision = parse_grounded_answer(
+        decision = parse_chat_response(
             llm_result.data,
             valid_references={citation.reference for citation in citations},
+            allow_grounded_answer=bool(context_blocks),
             behavior=self.behavior,
         )
         used_references = set(decision.references)
@@ -164,16 +169,10 @@ class ChatCompletionService:
             collection_id=payload.collection_id,
             session_id=payload.session_id,
             answer=decision.answer,
-            strategy=(
-                "vector_semantic_graph"
-                if graph_entities
-                else "vector_graph"
-                if graph_chunks
-                else "vector_only"
-            ),
+            strategy=_response_strategy(decision.response_type, graph_chunks, graph_entities, context_blocks),
             response_type=decision.response_type,
             citations=[citation for citation in citations if citation.reference in used_references],
-            usage=llm_result.usage,
+            usage=_combined_usage(vector_result.usage, llm_result.usage),
         )
 
     def _expand_graph_context(
@@ -181,6 +180,8 @@ class ChatCompletionService:
         payload: ChatCompletionRequest,
         matches: list[VectorMatch],
     ) -> tuple[list[GraphChunkContext], list[GraphEntityContext]]:
+        if not matches:
+            return [], []
         scope = GraphDatabaseScope(
             tenant_id=payload.tenant_id,
             app_id=payload.app_id,
@@ -210,6 +211,19 @@ class ChatCompletionService:
         except (AttributeError, ValueError):
             return None
         return document.filename if document is not None else None
+
+    def _retrieval_top_k(self) -> int:
+        try:
+            profiles = self.db.scalars(
+                select(EmbeddingModelProfile).order_by(EmbeddingModelProfile.created_at.desc())
+            ).all()
+        except AttributeError:
+            return self.behavior.default_retrieval_top_k
+        if profiles:
+            retrieval_top_k = profiles[0].retrieval_top_k
+            if retrieval_top_k and retrieval_top_k > 0:
+                return int(retrieval_top_k)
+        return self.behavior.default_retrieval_top_k
 
 
 def _compact_context_blocks(
@@ -255,6 +269,7 @@ def _answer_messages(
     history: list[dict[str, str]],
     context_blocks: list[_ContextBlock],
     graph_entities: list[GraphEntityContext],
+    has_document_context: bool,
     behavior: ChatAssistantBehavior = DEFAULT_CHAT_BEHAVIOR,
 ) -> list[dict[str, str]]:
     rendered_context = "\n\n".join(
@@ -265,11 +280,12 @@ def _answer_messages(
         f"{entity.name} ({entity.entity_type})"
         for entity in graph_entities[:24]
     )
-    return grounded_answer_messages(
+    return chat_response_messages(
         question=question,
         history=history,
         rendered_context=rendered_context,
         rendered_entities=rendered_entities,
+        has_document_context=has_document_context,
         behavior=behavior,
     )
 
@@ -307,3 +323,29 @@ def _truncate_text(value: str, limit: int) -> str:
     if limit <= 3:
         return clean_value[:limit]
     return f"{clean_value[: limit - 3].rstrip()}..."
+
+
+def _combined_usage(embedding_usage: dict, answer_usage: dict) -> dict:
+    return {
+        "retrieval_embedding": dict(embedding_usage or {}),
+        "llm_response": dict(answer_usage or {}),
+        "total_tokens": int((embedding_usage or {}).get("total_tokens") or 0)
+        + int((answer_usage or {}).get("total_tokens") or 0),
+    }
+
+
+def _response_strategy(
+    response_type: str,
+    graph_chunks: list[GraphChunkContext],
+    graph_entities: list[GraphEntityContext],
+    context_blocks: list[_ContextBlock],
+) -> str:
+    if response_type == "social":
+        return "embedding_first_social"
+    if response_type == "refusal" and not context_blocks:
+        return "embedding_first_no_context"
+    if graph_entities:
+        return "vector_semantic_graph"
+    if graph_chunks:
+        return "vector_graph"
+    return "vector_only"

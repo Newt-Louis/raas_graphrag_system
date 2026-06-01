@@ -46,8 +46,6 @@ class ChatCompletionRequest(BaseModel):
     session_id: str | None = Field(default=None, max_length=255)
     message: str = Field(min_length=1, max_length=8_000)
     history: list[ChatHistoryMessage] = Field(default_factory=list, max_length=12)
-    top_k: int = Field(default=5, ge=1, le=10)
-    min_similarity: float = Field(default=0.4, ge=0.0, le=1.0)
 
 
 class ChatCitationResponse(BaseModel):

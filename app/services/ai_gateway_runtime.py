@@ -105,7 +105,7 @@ def build_llm_gateway(
                 "timeout": profile.timeout_seconds,
                 **({"temperature": profile.temperature} if profile.temperature is not None else {}),
                 **({"top_p": profile.top_p} if profile.top_p is not None else {}),
-                **({"top_k": profile.top_k} if profile.top_k is not None else {}),
+                **({"top_k": profile.top_k} if profile.top_k else {}),
                 **({"max_tokens": profile.max_output_tokens} if profile.max_output_tokens is not None else {}),
                 **(profile.extra_parameters or {}),
             }

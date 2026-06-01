@@ -132,6 +132,57 @@ class AIGatewayRuntimeTests(unittest.TestCase):
         self.assertEqual(snapshot["default_llm_profile_id"], "runtime-llm-pool")
         self.assertEqual(snapshot["profiles"][0]["keys"][0]["model_profile_id"], str(profile_id))
 
+    def test_llm_runtime_omits_zero_top_k_so_provider_uses_model_default(self) -> None:
+        provider_id = uuid4()
+        api_key_id = uuid4()
+        profile = SimpleNamespace(
+            id=uuid4(),
+            provider_id=provider_id,
+            api_key_id=api_key_id,
+            temperature=None,
+            top_p=None,
+            top_k=0,
+            max_output_tokens=None,
+            extra_parameters={},
+            timeout_seconds=120,
+            api_base=None,
+            endpoint_id=None,
+            model_name="gemini-2.5-flash",
+        )
+        provider = SimpleNamespace(
+            code="gemini",
+            base_url=None,
+            provider_config={},
+            is_enabled=True,
+            is_locked=False,
+        )
+        api_key = SimpleNamespace(
+            id=api_key_id,
+            provider_id=provider_id,
+            encrypted_api_key="encrypted",
+            api_base=None,
+            endpoint_id=None,
+            allowed_capabilities=["llm"],
+            status="active",
+            is_enabled=True,
+            is_locked=False,
+        )
+        pool = SimpleNamespace(
+            profile=profile,
+            tenant_id=None,
+            app_id=None,
+            is_enabled=True,
+            is_locked=False,
+            today_quota_exhausted=False,
+        )
+        db = FakeRuntimeSession(rows=[pool], provider=provider, api_key=api_key)
+
+        with patch("app.services.ai_gateway_runtime.decrypt_secret", return_value="secret"):
+            gateway = build_llm_gateway(db)
+
+        runtime_profile = gateway._profiles["runtime-llm-pool"]
+        self.assertNotIn("top_k", runtime_profile.default_params)
+
     def test_embedding_runtime_rejects_non_gemini_provider(self) -> None:
         provider_id = uuid4()
         api_key_id = uuid4()

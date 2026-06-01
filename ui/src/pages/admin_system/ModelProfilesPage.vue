@@ -543,13 +543,17 @@ function focusEditor(rowId: string, field: EditableField) {
   if (editor instanceof HTMLInputElement) editor.select()
 }
 
-function normalizeDraft(column: EditableColumn, value: string) {
-  if (column.field === 'status')
-    return statusOptions.includes(value as ApiStatus) ? (value as ApiStatus) : 'active'
-  if (column.editor === 'number') return value.trim() === '' ? null : Number.parseInt(value, 10)
-  if (column.editor === 'decimal') return value.trim() === '' ? null : Number(value)
-  if (column.editor === 'json') return value.trim() || '{}'
-  return value.trim()
+function normalizeDraft(column: EditableColumn, value: string | number | null | undefined) {
+  if (value === null || value === undefined) return value;
+
+  if (column.field === 'status') {
+    return statusOptions.includes(value as ApiStatus) ? (value as ApiStatus) : 'active';
+  }
+  const strValue = String(value);
+  if (column.editor === 'number') return strValue.trim() === '' ? null : Number.parseInt(strValue, 10)
+  if (column.editor === 'decimal') return strValue.trim() === '' ? null : Number(strValue)
+  if (column.editor === 'json') return strValue.trim() || '{}'
+  return typeof value === 'string' ? value.trim() : value;
 }
 
 function canEdit(field: EditableField) {

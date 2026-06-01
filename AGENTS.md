@@ -353,10 +353,11 @@ Mục này ghi lại trạng thái mới nhất sau phiên làm việc ngày 29/
   - `ui/src/pages/documents_visualize/VectorVisualizationPage.vue` đã có UI thực tế cho Vector: một ô nhập test query, kết quả top matches và bảng embedding health. Hiện mặc định gửi scope dev `tenant-a`/`app-a`, `top_k=5`, `min_similarity=0.4`.
   - `ui/src/pages/documents_visualize/GraphVisualizationPage.vue` đã gọi graph visualize API và hiển thị graph bằng Cytoscape.js. Structure node label dùng title/excerpt/page/chunk index thay vì chỉ hiện `paragraph`, `heading` hoặc số chunk.
 - Chat GraphRAG MVP:
-  - Endpoint `POST /api/v1/chat/completions` embed query qua cùng Gemini embedding gateway với ingest, search LanceDB, mở rộng context qua Kuzu semantic traversal, compact context theo budget rồi gọi LLM gateway để synthesize answer.
-  - `app/services/chat/behavior.py` là placeholder cấu hình identity/personality/style/refusal message của assistant. Sau này cần hydrate theo tenant/app/widget config thay vì để mặc định platform.
-  - `app/services/chat/policy.py` cho phép xã giao đơn giản bằng phản hồi cục bộ; câu hỏi nghiệp vụ phải qua retrieval. LLM synthesis bắt buộc trả JSON decision `answer|refuse`; backend chỉ nhận answer có citation hợp lệ, nếu không trả đúng `tôi không thể xử lý được thông tin này`.
-  - Chat dùng `CHAT_MIN_GROUNDED_SIMILARITY` riêng để không dùng vector match quá yếu dù client debug gửi threshold thấp hơn. Context budget cấu hình qua các biến `CHAT_CONTEXT_*`.
+  - Endpoint `POST /api/v1/chat/completions` dùng workflow embedding-first. Nhóm hard-block từ chối ngay không gọi model; request còn lại luôn embed query và search LanceDB trước. Chỉ vector matches đạt threshold mới được đưa vào context graph/RAG, sau đó gọi đúng một LLM để chọn `grounded_answer|social|refuse` và tạo phản hồi.
+  - `app/services/chat/behavior.py` hiện tập trung placeholder identity/personality/style, phạm vi smalltalk, nhóm nội dung hard-block, refusal variants ngẫu nhiên và runtime knobs. Sau này cần hydrate theo tenant/app/widget config thay vì để mặc định platform.
+  - `app/services/chat/policy.py` dựng và parse JSON contract duy nhất `grounded_answer|social|refuse`, kiểm tra lại social answer và chỉ nhận grounded answer có citation hợp lệ. Khi không có context đạt threshold, backend cấm grounded answer dù LLM cố trả lời.
+  - Chat completion không nhận `top_k` hoặc `min_similarity` từ frontend. Similarity threshold mặc định `0.7` và fallback retrieval top-k `5` nằm trong behavior; retrieval top-k ưu tiên `embedding_model_profiles.retrieval_top_k` của profile mới nhất nếu có. `llm_model_profiles.top_k` chỉ là sampling parameter của provider và bị bỏ qua khi null hoặc `0`.
+  - Context budget cấu hình qua các biến `CHAT_CONTEXT_*`.
   - Response chat trả `response_type`, answer, retrieval strategy và citation tối thiểu; không đẩy raw vector metadata/debug payload sang UI chat hoặc vào prompt LLM.
   - `ui/src/views/EmbedChatView.vue` là màn hình chat full-page thực tế, gọi completion API, giữ history ngắn theo session, hiển thị loại phản hồi và citation mở rộng khi cần.
 - Tests:

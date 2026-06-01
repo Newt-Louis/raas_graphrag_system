@@ -79,8 +79,6 @@ async function sendMessage() {
         session_id: sessionId.value,
         message: text,
         history,
-        top_k: 5,
-        min_similarity: 0.4,
       }),
     })
     const payload = await response.json().catch(() => ({}))
