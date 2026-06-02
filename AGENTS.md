@@ -183,16 +183,16 @@ Services là nơi biểu diễn nghiệp vụ GraphRAG-aaS và là lớp kết n
 
 ## Vector Retrieval Và Hybrid Sau Này
 
-Hiện tại retrieval service đang vector-only:
+Toàn bộ retrieval hiện đi qua MỘT đường duy nhất `GraphRAGRetrievalService`; đã bỏ đường hashing song song cũ:
 
-- `app/services/vector/embeddings.py` có `HashingTextEmbeddingService` để dev/test không cần secret. Đây không phải embedding production.
-- `app/services/vector/store.py` có `LanceDBVectorStore` và `InMemoryVectorStore`.
-- `app/services/retrieval/orchestrator.py` là điểm hứng retrieval trước khi synthesis. Chat API nên gọi orchestrator/service, không gọi thẳng LanceDB.
-- `app/graphrag/vector_database/` là luồng GraphRAG-facing mới cho LanceDB với Gemini embedding thật: `GraphRAGVectorDatabasePipeline.ingest()` gọi AI Gateway Gemini adapter để embed document chunks rồi lưu vào LanceDB; `query()` embed query bằng cùng Gemini profile rồi tìm trong LanceDB và trả `VectorMatch` gồm `similarity`, `distance`, `document_id`, `chunk_id`, text và metadata. Luồng này dùng `settings.LANCEDB_PATH` và `settings.VECTOR_INDEX_TABLE` qua factory, không gọi LLM.
+- `app/services/retrieval/graphrag.py` có `GraphRAGRetrievalService` (async) + `GraphRAGRetrieval`: embed query qua embedding gateway thật, search LanceDB qua adapter LlamaIndex, rồi mở rộng grounded matches bằng Kuzu semantic/structure graph. Trả `vector_matches`, `graph_chunks`, `graph_entities`, `strategy` (`vector_only`/`vector_graph`/`vector_semantic_graph`/`no_context`), `embedding_model`, `usage`.
+- Đây là điểm hứng retrieval dùng chung cho cả `ChatCompletionService` (answer synthesis) và các route debug `POST /api/v1/chat/retrieve`, `GET /api/v1/home`. Không tạo lại retriever riêng cho từng caller; mọi nơi gọi service này để không rơi về index hashing cục bộ.
+- ĐÃ XÓA: `app/services/vector/` (`HashingTextEmbeddingService`, compat `LanceDBVectorStore`/`InMemoryVectorStore`) và `app/services/retrieval/orchestrator.py`/`factory.py`/`models.py`. Không khôi phục lại hashing embedding cho đường retrieval; mọi vector phải cùng embedding profile/dimension với index.
+- `app/graphrag/vector_database/` là luồng GraphRAG-facing cho LanceDB với Gemini embedding thật: `GraphRAGVectorDatabasePipeline.ingest()` gọi AI Gateway Gemini adapter để embed document chunks rồi lưu vào LanceDB; `query()` embed query bằng cùng Gemini profile rồi tìm trong LanceDB và trả `VectorMatch` gồm `similarity`, `distance`, `document_id`, `chunk_id`, text và metadata. Luồng này dùng `settings.LANCEDB_PATH` và `settings.VECTOR_INDEX_TABLE` qua factory, không gọi LLM.
 - LanceDB production được bọc bằng adapter chính thức LlamaIndex `LanceDBVectorStore`. Factory store dùng singleton cache theo process và connection lazy-init để tránh mở local DB lặp khi service được dựng theo request.
-- Route `POST /api/v1/ingest` hiện parse/chunk tài liệu rồi gọi `app/graphrag/vector_database/` để embed qua một Gemini embedding profile hydrate từ PostgreSQL trước khi lưu LanceDB; không còn dùng hashing local cho đường ingest route chính. Route `POST /api/v1/ingest/query` embed query qua cùng Gemini gateway rồi search LanceDB để trả cosine similarity, chưa gọi LLM synthesis.
+- Route `POST /api/v1/ingest` hiện parse/chunk tài liệu rồi gọi `app/graphrag/vector_database/` để embed qua một Gemini embedding profile hydrate từ PostgreSQL trước khi lưu LanceDB. Route `POST /api/v1/ingest/query` embed query qua cùng Gemini gateway rồi search LanceDB để trả cosine similarity, chưa gọi LLM synthesis.
 - Khi chuyển sang embedding provider thật, ingest embedding và query embedding phải dùng cùng embedding profile hoặc profile tương thích dimension với index.
-- Khi thêm GraphDB/Kuzu retrieval, mở rộng orchestrator để hợp nhất kết quả vector + graph, rerank, và trả citation/source metadata. Không bẻ chat API sang gọi trực tiếp hai DB.
+- Khi mở rộng hybrid/rerank, mở rộng `GraphRAGRetrievalService` để hợp nhất vector + graph và trả citation/source metadata. Không bẻ chat API sang gọi trực tiếp LanceDB/Kuzu.
 
 ## Platform Admin Và Cấu Hình AI
 

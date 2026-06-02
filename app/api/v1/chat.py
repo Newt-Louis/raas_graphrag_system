@@ -9,7 +9,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
-from app.graphrag.vector_database import VectorDatabasePipelineError
+from app.graphrag.vector_database import VectorDatabasePipelineError, VectorDatabaseScope
 from app.schemas.chat import (
     ChatCompletionRequest,
     ChatCompletionResponse,
@@ -19,8 +19,7 @@ from app.schemas.chat import (
 )
 from app.services.ai_gateway_runtime import AIGatewayRuntimeError
 from app.services.chat import ChatCompletionError, ChatCompletionService
-from app.services.retrieval.factory import get_retrieval_orchestrator
-from app.services.retrieval.models import RetrievalRequest
+from app.services.retrieval import GraphRAGRetrieval, GraphRAGRetrievalService
 
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -84,40 +83,82 @@ def _sse_event(event: str, data: dict) -> str:
 
 
 @router.post("/retrieve", response_model=ChatRetrieveResponse)
-async def retrieve_chat_context(request: ChatRetrieveRequest) -> ChatRetrieveResponse:
-    orchestrator = get_retrieval_orchestrator()
+async def retrieve_chat_context(
+    request: ChatRetrieveRequest,
+    db: Session = Depends(get_db),
+) -> ChatRetrieveResponse:
     try:
-        result = orchestrator.retrieve(
-            RetrievalRequest(
+        retrieval = await GraphRAGRetrievalService(db).retrieve(
+            scope=VectorDatabaseScope(
                 tenant_id=request.tenant_id,
                 app_id=request.app_id,
                 collection_id=request.collection_id,
-                query=request.message,
-                top_k=request.top_k,
-                min_score=request.min_score,
-            )
+            ),
+            query=request.message,
+            top_k=request.top_k,
+            min_similarity=request.min_score,
         )
+    except AIGatewayRuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    except VectorDatabasePipelineError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
     except RuntimeError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=str(exc),
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
 
     return ChatRetrieveResponse(
-        tenant_id=result.tenant_id,
-        app_id=result.app_id,
-        collection_id=result.collection_id,
-        query=result.query,
-        strategy=result.strategy,
-        contexts=[
-            RetrievedContextResponse(
-                source=context.source,
-                text=context.text,
-                score=context.score,
-                document_id=context.document_id,
-                chunk_id=context.chunk_id,
-                metadata=context.metadata,
-            )
-            for context in result.contexts
-        ],
+        tenant_id=request.tenant_id,
+        app_id=request.app_id,
+        collection_id=request.collection_id,
+        query=retrieval.query,
+        strategy=retrieval.strategy,
+        contexts=_retrieved_contexts(retrieval),
     )
+
+
+def _retrieved_contexts(retrieval: GraphRAGRetrieval) -> list[RetrievedContextResponse]:
+    contexts = [
+        RetrievedContextResponse(
+            source="vector",
+            text=match.text,
+            score=match.similarity,
+            document_id=match.document_id,
+            chunk_id=match.chunk_id,
+            metadata=match.metadata,
+        )
+        for match in retrieval.vector_matches
+    ]
+    contexts.extend(
+        RetrievedContextResponse(
+            source="graph",
+            text=chunk.text,
+            score=1.0,
+            document_id=chunk.document_id,
+            chunk_id=chunk.chunk_id,
+            metadata={
+                **chunk.metadata,
+                "previous_chunk_id": chunk.previous_chunk_id,
+                "next_chunk_id": chunk.next_chunk_id,
+                "parent_chunk_id": chunk.parent_chunk_id,
+                "source_elements": [
+                    {
+                        "element_id": element.element_id,
+                        "element_type": element.element_type,
+                        "order_index": element.order_index,
+                        "text": element.text,
+                    }
+                    for element in chunk.source_elements
+                ],
+                "semantic_entities": [
+                    {
+                        "entity_id": entity.entity_id,
+                        "entity_type": entity.entity_type,
+                        "name": entity.name,
+                        "description": entity.description,
+                    }
+                    for entity in retrieval.graph_entities
+                ],
+            },
+        )
+        for chunk in retrieval.graph_chunks
+    )
+    return contexts

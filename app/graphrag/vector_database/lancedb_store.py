@@ -26,6 +26,21 @@ from app.graphrag.vector_database.models import (
 )
 
 
+class LanceDBSchemaError(RuntimeError):
+    """Raised when the on-disk LanceDB table predates the current LlamaIndex schema."""
+
+
+def _raise_if_incompatible_schema(exc: Exception, table_name: str) -> None:
+    message = str(exc)
+    markers = ("No field named metadata", "metadata_json", "Schema error")
+    if any(marker in message for marker in markers):
+        raise LanceDBSchemaError(
+            f"LanceDB table '{table_name}' có schema cũ không tương thích "
+            f"(thiếu cột struct 'metadata'). Hãy reset data/lancedb bằng "
+            f"`.venv/bin/python -m app.graphrag.reset_db` rồi ingest lại tài liệu."
+        ) from exc
+
+
 class LanceDBPrecomputedVectorStore:
     """Tenant-scoped LlamaIndex adapter for AI-Gateway-produced embeddings."""
 
@@ -114,6 +129,9 @@ class LanceDBPrecomputedVectorStore:
             nodes = self.llama_vector_store.get_nodes(filters=filters)
         except TableNotFoundError:
             return []
+        except Exception as exc:
+            _raise_if_incompatible_schema(exc, self.table_name)
+            raise
         return [_stored_record_from_node(node) for node in nodes[: max(1, limit)]]
 
     def delete_document(self, *, scope: VectorDatabaseScope, document_id: str) -> int:
@@ -162,6 +180,9 @@ class _ScopedVectorRetriever(BaseRetriever):
             )
         except (TableNotFoundError, Warning):
             return []
+        except Exception as exc:
+            _raise_if_incompatible_schema(exc, getattr(self.vector_store, "table_name", "?"))
+            raise
         return [
             NodeWithScore(node=node, score=score)
             for node, score in zip(result.nodes or [], result.similarities or [], strict=True)

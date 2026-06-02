@@ -1,9 +1,6 @@
-from app.services.retrieval.models import RetrievedContext, RetrievalRequest, RetrievalResult
-from app.services.retrieval.orchestrator import RetrievalOrchestrator
+from app.services.retrieval.graphrag import GraphRAGRetrieval, GraphRAGRetrievalService
 
 __all__ = [
-    "RetrievedContext",
-    "RetrievalOrchestrator",
-    "RetrievalRequest",
-    "RetrievalResult",
+    "GraphRAGRetrieval",
+    "GraphRAGRetrievalService",
 ]

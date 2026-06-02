@@ -1,7 +1,11 @@
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.orm import Session
 
-from app.services.retrieval.factory import get_retrieval_orchestrator
-from app.services.retrieval.models import RetrievalRequest
+from app.core.config import settings
+from app.db.session import get_db
+from app.graphrag.vector_database import VectorDatabasePipelineError, VectorDatabaseScope
+from app.services.ai_gateway_runtime import AIGatewayRuntimeError
+from app.services.retrieval import GraphRAGRetrievalService
 
 router = APIRouter(prefix="/home", tags=["home"])
 
@@ -13,34 +17,56 @@ async def query(
     app_id: str,
     collection_id: str | None = None,
     top_k: int = 5,
+    db: Session = Depends(get_db),
 ):
     """Compatibility endpoint for scoped GraphRAG retrieval."""
-    result = get_retrieval_orchestrator().retrieve(
-        RetrievalRequest(
-            tenant_id=tenant_id,
-            app_id=app_id,
-            collection_id=collection_id,
+    try:
+        retrieval = await GraphRAGRetrievalService(db).retrieve(
+            scope=VectorDatabaseScope(
+                tenant_id=tenant_id,
+                app_id=app_id,
+                collection_id=collection_id,
+            ),
             query=question,
             top_k=top_k,
+            min_similarity=settings.RETRIEVAL_MIN_SCORE,
         )
+    except AIGatewayRuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    except VectorDatabasePipelineError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+
+    contexts = [
+        {
+            "source": "vector",
+            "text": match.text,
+            "score": match.similarity,
+            "document_id": match.document_id,
+            "chunk_id": match.chunk_id,
+            "metadata": match.metadata,
+        }
+        for match in retrieval.vector_matches
+    ]
+    contexts.extend(
+        {
+            "source": "graph",
+            "text": chunk.text,
+            "score": 1.0,
+            "document_id": chunk.document_id,
+            "chunk_id": chunk.chunk_id,
+            "metadata": chunk.metadata,
+        }
+        for chunk in retrieval.graph_chunks
     )
     return {
-        "query": result.query,
-        "tenant_id": result.tenant_id,
-        "app_id": result.app_id,
-        "collection_id": result.collection_id,
-        "strategy": result.strategy,
-        "contexts": [
-            {
-                "source": context.source,
-                "text": context.text,
-                "score": context.score,
-                "document_id": context.document_id,
-                "chunk_id": context.chunk_id,
-                "metadata": context.metadata,
-            }
-            for context in result.contexts
-        ],
+        "query": retrieval.query,
+        "tenant_id": tenant_id,
+        "app_id": app_id,
+        "collection_id": collection_id,
+        "strategy": retrieval.strategy,
+        "contexts": contexts,
     }
 
 

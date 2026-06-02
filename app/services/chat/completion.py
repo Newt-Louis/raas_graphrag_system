@@ -10,18 +10,11 @@ from app.core.config import settings
 from app.graphrag.ai_client import GraphRAGAIClient
 from app.graphrag.graph_database import (
     GraphChunkContext,
-    GraphDatabaseScope,
     GraphEntityContext,
     KuzuGraphStore,
-    KuzuGraphStoreError,
     get_kuzu_graph_store,
 )
-from app.graphrag.vector_database import (
-    GraphRAGVectorDatabasePipeline,
-    VectorDatabaseScope,
-    VectorMatch,
-    VectorQueryRequest,
-)
+from app.graphrag.vector_database import VectorDatabaseScope
 from app.graphrag.vector_database.factory import get_lancedb_vector_store
 from app.models.ai_gateway import EmbeddingModelProfile
 from app.models.documents import Document
@@ -37,6 +30,7 @@ from app.services.chat.policy import (
     has_restricted_topic,
     parse_chat_response,
 )
+from app.services.retrieval import GraphRAGRetrievalService
 
 
 class ChatCompletionError(RuntimeError):
@@ -81,29 +75,25 @@ class ChatCompletionService:
                 response_type="refusal",
             )
 
-        vector_pipeline = GraphRAGVectorDatabasePipeline(
-            ai_client=GraphRAGAIClient(build_embedding_gateway(self.db)),
+        retrieval_service = GraphRAGRetrievalService(
+            self.db,
             vector_store=self.vector_store,
+            graph_store=self.graph_store,
+            embedding_ai_client=GraphRAGAIClient(build_embedding_gateway(self.db)),
         )
-        vector_result = await vector_pipeline.query(
-            VectorQueryRequest(
-                scope=VectorDatabaseScope(
-                    tenant_id=payload.tenant_id,
-                    app_id=payload.app_id,
-                    collection_id=payload.collection_id,
-                ),
-                query=_retrieval_query(payload),
-                top_k=self._retrieval_top_k(),
-                min_similarity=0.0,
-            )
+        retrieval = await retrieval_service.retrieve(
+            scope=VectorDatabaseScope(
+                tenant_id=payload.tenant_id,
+                app_id=payload.app_id,
+                collection_id=payload.collection_id,
+            ),
+            query=_retrieval_query(payload),
+            top_k=self._retrieval_top_k(),
+            min_similarity=self.behavior.grounded_min_similarity,
         )
-        grounded_matches = [
-            match
-            for match in vector_result.matches
-            if match.similarity >= self.behavior.grounded_min_similarity
-        ]
-
-        graph_chunks, graph_entities = self._expand_graph_context(payload, grounded_matches)
+        grounded_matches = retrieval.vector_matches
+        graph_chunks = retrieval.graph_chunks
+        graph_entities = retrieval.graph_entities
         context_blocks = _compact_context_blocks(
             [
                 *[
@@ -172,35 +162,8 @@ class ChatCompletionService:
             strategy=_response_strategy(decision.response_type, graph_chunks, graph_entities, context_blocks),
             response_type=decision.response_type,
             citations=[citation for citation in citations if citation.reference in used_references],
-            usage=_combined_usage(vector_result.usage, llm_result.usage),
+            usage=_combined_usage(retrieval.usage, llm_result.usage),
         )
-
-    def _expand_graph_context(
-        self,
-        payload: ChatCompletionRequest,
-        matches: list[VectorMatch],
-    ) -> tuple[list[GraphChunkContext], list[GraphEntityContext]]:
-        if not matches:
-            return [], []
-        scope = GraphDatabaseScope(
-            tenant_id=payload.tenant_id,
-            app_id=payload.app_id,
-            collection_id=payload.collection_id,
-        )
-        seed_chunk_ids = [match.chunk_id for match in matches]
-        try:
-            semantic_result = self.graph_store.semantic_context_for_chunks(
-                scope=scope,
-                chunk_ids=seed_chunk_ids,
-                hops=1,
-            )
-            chunk_result = self.graph_store.chunk_context(
-                scope=scope,
-                chunk_ids=list(dict.fromkeys([*seed_chunk_ids, *semantic_result.chunk_ids])),
-            )
-        except KuzuGraphStoreError:
-            return [], []
-        return chunk_result.chunks, semantic_result.entities
 
     def _document_filename(self, document_id: str, metadata: dict | None = None) -> str | None:
         raw_filename = (metadata or {}).get("filename")
