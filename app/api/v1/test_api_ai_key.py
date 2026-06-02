@@ -67,7 +67,6 @@ async def test_llm_model_profile(
         temperature=payload.temperature,
         max_tokens=payload.max_tokens,
     )
-    print(call_kwargs)
     try:
         response = await acompletion(**call_kwargs)
     except Exception as exc:  # noqa: BLE001 - test endpoint returns provider error to admin UI
