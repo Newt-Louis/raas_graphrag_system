@@ -79,6 +79,8 @@ const form = reactive({
   chunk_strategy: 'parent_child',
   max_tokens: 700,
   overlap_tokens: 80,
+  parent_max_tokens: 1800,
+  semantic_similarity_threshold: 0.72,
 })
 
 const chunkStrategyOptions: ChunkStrategyOption[] = [
@@ -237,6 +239,8 @@ function buildFormData(file: File) {
   data.append('chunk_strategy', form.chunk_strategy)
   data.append('max_tokens', String(form.max_tokens))
   data.append('overlap_tokens', String(form.overlap_tokens))
+  data.append('parent_max_tokens', String(form.parent_max_tokens))
+  data.append('semantic_similarity_threshold', String(form.semantic_similarity_threshold))
   data.append('extract_semantic_graph', 'true')
   data.append('file', file)
   return data
@@ -450,6 +454,23 @@ function formatDate(value: string | null) {
       <label class="form-field col-3 col-md-4 col-sm-6">
         <span>overlap_tokens</span>
         <InputNumber v-model="form.overlap_tokens" :min="0" :max="1000" show-buttons input-class="full-input" />
+      </label>
+      <label v-if="form.chunk_strategy === 'parent_child'" class="form-field col-3 col-md-4 col-sm-6">
+        <span>parent_max_tokens</span>
+        <InputNumber v-model="form.parent_max_tokens" :min="100" show-buttons input-class="full-input" />
+      </label>
+      <label v-if="form.chunk_strategy === 'semantic'" class="form-field col-3 col-md-4 col-sm-6">
+        <span>semantic_similarity_threshold</span>
+        <InputNumber
+          v-model="form.semantic_similarity_threshold"
+          :min="0"
+          :max="1"
+          :step="0.01"
+          :min-fraction-digits="2"
+          :max-fraction-digits="2"
+          show-buttons
+          input-class="full-input"
+        />
       </label>
     </form>
 

@@ -176,9 +176,12 @@ class GeminiEmbeddingTests(unittest.IsolatedAsyncioTestCase):
 
         await client.embed_documents(["policy"], tenant_id="tenant-a", app_id="app-a")
         await client.embed_query("refund", tenant_id="tenant-a", app_id="app-a")
+        await client.embed_semantic_units(["sentence"], tenant_id="tenant-a", app_id="app-a")
 
         self.assertEqual(gateway.calls[0]["task_type"], "RETRIEVAL_DOCUMENT")
         self.assertEqual(gateway.calls[1]["task_type"], "RETRIEVAL_QUERY")
+        self.assertEqual(gateway.calls[2]["task_type"], "RETRIEVAL_DOCUMENT")
+        self.assertEqual(gateway.calls[2]["context"].endpoint, "graphrag.documents.semantic_chunking")
 
     async def test_gateway_uses_only_first_gemini_embedding_key(self) -> None:
         models = FakeAsyncModels([[1.0, 0.0, 0.0]])

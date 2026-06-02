@@ -44,6 +44,7 @@ from app.services.documents import (
     DocumentLifecycleService,
 )
 from app.services.ingestion import DocumentIngestionPipeline
+from app.services.ingestion.chunking import SemanticChunkingError
 from app.services.ingestion.models import ChunkStrategy, ChunkingConfig, DocumentChunk, DocumentScope
 from app.services.ingestion.parsers import (
     ALLOWED_DOCUMENT_EXTENSIONS,
@@ -72,6 +73,8 @@ async def ingest_document(
     chunk_strategy: ChunkStrategy = Form(default=ChunkStrategy.PARENT_CHILD),
     max_tokens: int = Form(default=700, ge=100),
     overlap_tokens: int = Form(default=80, ge=0, le=1000),
+    parent_max_tokens: int = Form(default=1800, ge=100),
+    semantic_similarity_threshold: float = Form(default=0.72, ge=0.0, le=1.0),
     extract_semantic_graph: bool = Form(default=True),
     llm_profile_id: UUID | None = Form(default=None),
     file: UploadFile = File(...),
@@ -96,8 +99,20 @@ async def ingest_document(
     )
 
     pipeline = DocumentIngestionPipeline()
+    chunking_config = ChunkingConfig(
+        strategy=chunk_strategy,
+        max_tokens=max_tokens,
+        overlap_tokens=min(overlap_tokens, max_tokens - 1),
+        parent_max_tokens=max(parent_max_tokens, max_tokens),
+        semantic_similarity_threshold=semantic_similarity_threshold,
+    )
     try:
-        bundle = pipeline.ingest_file(
+        semantic_embedding_client = (
+            GraphRAGAIClient(build_embedding_gateway(db))
+            if chunk_strategy == ChunkStrategy.SEMANTIC
+            else None
+        )
+        bundle = await pipeline.ingest_file_async(
             path=stored_path,
             scope=DocumentScope(
                 tenant_id=tenant_id,
@@ -106,11 +121,8 @@ async def ingest_document(
             ),
             filename=filename,
             content_type=file.content_type,
-            chunking=ChunkingConfig(
-                strategy=chunk_strategy,
-                max_tokens=max_tokens,
-                overlap_tokens=min(overlap_tokens, max_tokens - 1),
-            ),
+            chunking=chunking_config,
+            semantic_embedding_client=semantic_embedding_client,
         )
     except ParserUnavailableError as exc:
         _delete_stored_upload(stored_path)
@@ -118,6 +130,12 @@ async def ingest_document(
     except DocumentValidationError as exc:
         _delete_stored_upload(stored_path)
         raise HTTPException(status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, detail=str(exc)) from exc
+    except AIGatewayRuntimeError as exc:
+        _delete_stored_upload(stored_path)
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    except SemanticChunkingError as exc:
+        _delete_stored_upload(stored_path)
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
     except Exception:
         _delete_stored_upload(stored_path)
         raise
@@ -125,7 +143,7 @@ async def ingest_document(
     try:
         document = document_service.register_indexing_document(
             bundle=bundle,
-            chunk_strategy=chunk_strategy,
+            chunking=chunking_config,
         )
     except DocumentAlreadyUploadedError as exc:
         _delete_stored_upload(stored_path)
@@ -342,6 +360,26 @@ def _graph_context_for_matches(
             collection_id=collection_id,
             chunk_ids=list(dict.fromkeys([*chunk_ids, *semantic_result.chunk_ids])),
         )
+        parent_chunk_ids = [
+            chunk.parent_chunk_id
+            for chunk in graph_result.chunks
+            if chunk.parent_chunk_id
+        ]
+        if parent_chunk_ids:
+            parent_result = pipeline.chunk_context(
+                tenant_id=tenant_id,
+                app_id=app_id,
+                collection_id=collection_id,
+                chunk_ids=list(dict.fromkeys(parent_chunk_ids)),
+            )
+            graph_chunks = list(
+                {
+                    chunk.chunk_id: chunk
+                    for chunk in [*parent_result.chunks, *graph_result.chunks]
+                }.values()
+            )
+        else:
+            graph_chunks = graph_result.chunks
     except KuzuGraphStoreError as exc:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
 
@@ -366,7 +404,7 @@ def _graph_context_for_matches(
                 for element in chunk.source_elements
             ],
         )
-        for chunk in graph_result.chunks
+        for chunk in graph_chunks
     ]
 
 

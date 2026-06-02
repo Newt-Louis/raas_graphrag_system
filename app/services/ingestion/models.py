@@ -84,6 +84,8 @@ class ChunkingConfig:
     max_tokens: int = 700
     overlap_tokens: int = 80
     min_tokens: int = 40
+    parent_max_tokens: int = 1_800
+    semantic_similarity_threshold: float = 0.72
 
 
 @dataclass

@@ -144,11 +144,18 @@ class KuzuGraphStore(PropertyGraphStore):
             chunk.chunk_id: _record_node_id(scope, "chunk", chunk.chunk_id)
             for chunk in bundle.chunks
         }
-        sorted_chunks = sorted(bundle.chunks, key=lambda chunk: chunk.chunk_index)
-        next_chunk_ids = {
-            previous.chunk_id: current.chunk_id
-            for previous, current in zip(sorted_chunks, sorted_chunks[1:], strict=False)
-        }
+        next_chunk_ids: dict[str, str] = {}
+        chunk_sequences: dict[str, list] = {}
+        for chunk in sorted(bundle.chunks, key=lambda item: item.chunk_index):
+            role = str(chunk.metadata.get("chunk_role") or "chunk")
+            chunk_sequences.setdefault(role, []).append(chunk)
+        for sequence in chunk_sequences.values():
+            next_chunk_ids.update(
+                {
+                    previous.chunk_id: current.chunk_id
+                    for previous, current in zip(sequence, sequence[1:], strict=False)
+                }
+            )
 
         nodes: list[TextNode] = []
         for chunk in bundle.chunks:

@@ -66,6 +66,31 @@ class GraphRAGAIClient:
             **overrides,
         )
 
+    async def embed_semantic_units(
+        self,
+        texts: list[str],
+        *,
+        tenant_id: str,
+        app_id: str,
+        collection_id: str | None = None,
+        profile_id: str | None = None,
+        expected_dim: int | None = None,
+        **overrides: Any,
+    ) -> RotationResult:
+        overrides.setdefault("task_type", "RETRIEVAL_DOCUMENT")
+        return await self.gateway.embed(
+            texts,
+            profile_id=profile_id,
+            expected_dim=expected_dim,
+            context=GatewayRequestContext(
+                tenant_id=tenant_id,
+                app_id=app_id,
+                collection_id=collection_id,
+                endpoint="graphrag.documents.semantic_chunking",
+            ),
+            **overrides,
+        )
+
     async def synthesize_answer(
         self,
         messages: list[dict[str, Any]],

@@ -6,6 +6,7 @@ Nền tảng GraphRAG-as-a-Service đa tenant cho phép phần mềm bên ngoài
 
 - Platform Admin quản lý provider, API key, embedding profile và LLM profile.
 - Ingest tài liệu: lưu registry PostgreSQL, parse, chunk, embed qua Gemini, index LanceDB và ghi graph Kuzu.
+- Chunking strategy theo request: semantic grouping bằng sentence embedding, sliding window theo token có overlap, hoặc parent-child với child index và parent context expansion khi retrieval.
 - GraphRAG semantic extraction: dùng LLM trích xuất entity/relation theo ontology allowlist.
 - Document Admin: upload, danh sách tài liệu, xóa tài liệu và mở Visualization.
 - Vector Visualization: search debugger, cosine similarity, distance, metadata và embedding health.
@@ -95,7 +96,7 @@ Embedding runtime dùng profile Gemini mới nhất trực tiếp, không xoay k
 
 1. Vào `/platform` cấu hình provider, key và model profile.
 2. Vào `/admin/documents`, upload tài liệu.
-3. Pipeline lưu document registry, parse/chunk, index LanceDB, ghi graph structure Kuzu và tùy chọn semantic extraction qua LLM.
+3. Pipeline lưu document registry, parse/chunk theo strategy đã chọn, index LanceDB, ghi graph structure Kuzu và tùy chọn semantic extraction qua LLM. Semantic chunking và semantic graph extraction là hai bước độc lập.
 4. Mở Visualization:
    - Tab `Vector`: kiểm tra search debugger và embedding health.
    - Tab `Graph`: kiểm tra graph Cytoscape theo document.

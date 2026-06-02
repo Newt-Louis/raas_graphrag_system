@@ -14,7 +14,7 @@ from app.graphrag.vector_database import VectorDatabaseScope
 from app.graphrag.vector_database.factory import get_lancedb_vector_store
 from app.models.documents import Document
 from app.repositories.documents import DocumentRepository
-from app.services.ingestion.models import ChunkStrategy, IngestionBundle
+from app.services.ingestion.models import ChunkingConfig, IngestionBundle
 
 
 class DocumentLifecycleError(RuntimeError):
@@ -58,7 +58,7 @@ class DocumentLifecycleService:
         self,
         *,
         bundle: IngestionBundle,
-        chunk_strategy: ChunkStrategy,
+        chunking: ChunkingConfig,
     ) -> Document:
         source = bundle.parsed_document.source
         scope = bundle.parsed_document.scope
@@ -81,7 +81,13 @@ class DocumentLifecycleService:
                     "app_id": scope.app_id,
                     "collection_id": scope.collection_id,
                 },
-                "chunk_strategy": chunk_strategy.value,
+                "chunk_strategy": chunking.strategy.value,
+                "chunking": {
+                    "max_tokens": chunking.max_tokens,
+                    "overlap_tokens": chunking.overlap_tokens,
+                    "parent_max_tokens": chunking.parent_max_tokens,
+                    "semantic_similarity_threshold": chunking.semantic_similarity_threshold,
+                },
             },
         )
         try:

@@ -94,8 +94,28 @@ class ChatCompletionService:
         grounded_matches = retrieval.vector_matches
         graph_chunks = retrieval.graph_chunks
         graph_entities = retrieval.graph_entities
+        parent_graph_chunks = [
+            chunk
+            for chunk in graph_chunks
+            if chunk.metadata.get("chunk_role") == "parent"
+        ]
+        other_graph_chunks = [
+            chunk
+            for chunk in graph_chunks
+            if chunk.metadata.get("chunk_role") != "parent"
+        ]
         context_blocks = _compact_context_blocks(
             [
+                *[
+                    _ContextBlock(
+                        source="graph",
+                        document_id=chunk.document_id,
+                        chunk_id=chunk.chunk_id,
+                        text=chunk.text,
+                        filename=self._document_filename(chunk.document_id),
+                    )
+                    for chunk in parent_graph_chunks
+                ],
                 *[
                     _ContextBlock(
                         source="vector",
@@ -115,7 +135,7 @@ class ChatCompletionService:
                         text=chunk.text,
                         filename=self._document_filename(chunk.document_id),
                     )
-                    for chunk in graph_chunks
+                    for chunk in other_graph_chunks
                 ],
             ]
         )

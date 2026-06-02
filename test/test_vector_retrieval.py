@@ -5,6 +5,7 @@ from typing import Any
 
 from app.ai_gateway.base_rotator import RotationResult
 from app.graphrag.graph_database import (
+    GraphChunkContext,
     GraphContextResult,
     GraphEntityContext,
     GraphTraversalResult,
@@ -62,6 +63,33 @@ class SemanticGraphStore(NoGraphStore):
             collection_id=scope.collection_id,
             entities=[GraphEntityContext(entity_id="e1", entity_type="Policy", name="Refund policy")],
             chunk_ids=list(chunk_ids),
+        )
+
+
+class ParentChildGraphStore(NoGraphStore):
+    def chunk_context(self, *, scope, chunk_ids):
+        contexts = {
+            "child-a": GraphChunkContext(
+                document_id="doc-policy",
+                chunk_id="child-a",
+                text="Refunds within 30 days.",
+                chunk_index=1,
+                parent_chunk_id="parent-a",
+                metadata={"chunk_role": "child"},
+            ),
+            "parent-a": GraphChunkContext(
+                document_id="doc-policy",
+                chunk_id="parent-a",
+                text="Complete refund policy with eligibility requirements and exceptions.",
+                chunk_index=0,
+                metadata={"chunk_role": "parent"},
+            ),
+        }
+        return GraphContextResult(
+            tenant_id=scope.tenant_id,
+            app_id=scope.app_id,
+            collection_id=scope.collection_id,
+            chunks=[contexts[chunk_id] for chunk_id in chunk_ids if chunk_id in contexts],
         )
 
 
@@ -217,6 +245,30 @@ class GraphRAGRetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(retrieval.strategy, "vector_semantic_graph")
         self.assertEqual(retrieval.graph_entities[0].name, "Refund policy")
+
+    async def test_parent_child_retrieval_expands_matched_child_to_parent_context(self) -> None:
+        store = InMemoryPrecomputedVectorStore()
+        store.add_records(
+            [
+                _record(
+                    vector_id="child-a",
+                    text="Refunds within 30 days.",
+                    vector=[1.0, 0.0, 0.0],
+                    tenant_id="tenant-a",
+                    app_id="support",
+                    document_id="doc-policy",
+                )
+            ]
+        )
+
+        retrieval = await _service(store, graph_store=ParentChildGraphStore()).retrieve(
+            scope=VectorDatabaseScope(tenant_id="tenant-a", app_id="support"),
+            query="refund policy",
+            top_k=5,
+            min_similarity=0.0,
+        )
+
+        self.assertEqual([chunk.chunk_id for chunk in retrieval.graph_chunks], ["parent-a", "child-a"])
 
 
 if __name__ == "__main__":

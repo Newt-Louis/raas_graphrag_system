@@ -79,6 +79,29 @@ class KuzuGraphDatabaseTests(unittest.TestCase):
         self.assertEqual(item.chunk_count, len(bundle.chunks))
         self.assertEqual(item.embeddable_chunk_count, len([chunk for chunk in bundle.chunks if chunk.is_embeddable]))
 
+    def test_parent_child_graph_returns_parent_for_embeddable_child(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "policy.txt"
+            path.write_text("Refunds are available within 30 days for eligible orders.", encoding="utf-8")
+            bundle = DocumentIngestionPipeline().ingest_file(
+                path=path,
+                scope=DocumentScope(tenant_id="tenant-a", app_id="app-a", collection_id="docs"),
+                filename=path.name,
+                content_type="text/plain",
+                chunking=ChunkingConfig(strategy=ChunkStrategy.PARENT_CHILD, max_tokens=100),
+            )
+            child = next(chunk for chunk in bundle.chunks if chunk.is_embeddable)
+            parent = next(chunk for chunk in bundle.chunks if not chunk.is_embeddable)
+            store = KuzuGraphStore(Path(temp_dir) / "kuzu" / "graph.db")
+
+            store.ingest_bundle(bundle)
+            context = store.chunk_context(
+                scope=GraphDatabaseScope("tenant-a", "app-a", "docs"),
+                chunk_ids=[child.chunk_id],
+            )
+
+        self.assertEqual(context.chunks[0].parent_chunk_id, parent.chunk_id)
+
     def test_persists_semantic_graph_traverses_entities_and_returns_visualization(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             bundle = _bundle(temp_dir, tenant_id="tenant-a", app_id="app-a")
@@ -182,7 +205,7 @@ def _bundle(temp_dir: str, *, tenant_id: str, app_id: str):
         scope=DocumentScope(tenant_id=tenant_id, app_id=app_id, collection_id="docs"),
         filename=path.name,
         content_type="text/plain",
-        chunking=ChunkingConfig(strategy=ChunkStrategy.SEMANTIC, max_tokens=100, overlap_tokens=0),
+        chunking=ChunkingConfig(strategy=ChunkStrategy.SLIDING_WINDOW, max_tokens=100, overlap_tokens=0),
     )
 
 

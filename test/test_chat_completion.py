@@ -118,6 +118,40 @@ class FakeGraphStore:
         )
 
 
+class ParentChildGraphStore:
+    def semantic_context_for_chunks(self, *, scope, chunk_ids, hops):
+        return GraphTraversalResult(
+            tenant_id=scope.tenant_id,
+            app_id=scope.app_id,
+            collection_id=scope.collection_id,
+        )
+
+    def chunk_context(self, *, scope, chunk_ids):
+        contexts = {
+            "recommendation-system": GraphChunkContext(
+                document_id="policy",
+                chunk_id="recommendation-system",
+                text="LanceDB is used.",
+                chunk_index=1,
+                parent_chunk_id="architecture-parent",
+                metadata={"chunk_role": "child"},
+            ),
+            "architecture-parent": GraphChunkContext(
+                document_id="policy",
+                chunk_id="architecture-parent",
+                text="The complete architecture section explains that LanceDB is used for vector retrieval.",
+                chunk_index=0,
+                metadata={"chunk_role": "parent"},
+            ),
+        }
+        return GraphContextResult(
+            tenant_id=scope.tenant_id,
+            app_id=scope.app_id,
+            collection_id=scope.collection_id,
+            chunks=[contexts[chunk_id] for chunk_id in chunk_ids if chunk_id in contexts],
+        )
+
+
 class ChatCompletionServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_completion_uses_vector_graph_context_and_llm_synthesis(self) -> None:
         store = _vector_store()
@@ -178,6 +212,32 @@ class ChatCompletionServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.response_type, "social")
         self.assertIn("Xin chào", response.answer)
         self.assertEqual(len(llm_gateway.calls), 1)
+
+    async def test_parent_context_is_prioritized_before_matched_child_for_synthesis(self) -> None:
+        llm_gateway = FakeLLMGateway()
+        service = ChatCompletionService(
+            FakeSession(),
+            vector_store=_vector_store(),
+            graph_store=ParentChildGraphStore(),
+            behavior=TEST_BEHAVIOR,
+        )
+
+        with (
+            patch("app.services.chat.completion.build_embedding_gateway", return_value=FakeEmbeddingGateway()),
+            patch("app.services.chat.completion.build_llm_gateway", return_value=llm_gateway),
+        ):
+            response = await service.complete(
+                ChatCompletionRequest(
+                    tenant_id="tenant-a",
+                    app_id="app-a",
+                    collection_id="docs",
+                    message="Which database is used?",
+                )
+            )
+
+        rendered_prompt = llm_gateway.calls[-1]["messages"][-1]["content"]
+        self.assertEqual(response.citations[0].chunk_id, "architecture-parent")
+        self.assertLess(rendered_prompt.index("architecture-parent"), rendered_prompt.index("recommendation-system"))
 
     async def test_restricted_topic_is_rejected_before_any_model_call(self) -> None:
         service = ChatCompletionService(

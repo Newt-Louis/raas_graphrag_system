@@ -4,6 +4,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from app.services.ingestion.chunking import DocumentChunker
+from app.services.ingestion.chunking import SemanticEmbeddingClient
 from app.services.ingestion.deduplication import ChunkDeduplicator
 from app.services.ingestion.models import (
     ChunkingConfig,
@@ -46,6 +47,28 @@ class DocumentIngestionPipeline:
         source = self._source_file(path, filename=filename, content_type=content_type)
         parsed = self.parser_registry.parse(path, scope, source)
         raw_chunks = self.chunker.chunk(parsed, chunking or ChunkingConfig())
+        return self._bundle(parsed, raw_chunks, known_chunk_hashes)
+
+    async def ingest_file_async(
+        self,
+        path: Path,
+        scope: DocumentScope,
+        filename: str | None = None,
+        content_type: str | None = None,
+        chunking: ChunkingConfig | None = None,
+        known_chunk_hashes: set[str] | None = None,
+        semantic_embedding_client: SemanticEmbeddingClient | None = None,
+    ) -> IngestionBundle:
+        source = self._source_file(path, filename=filename, content_type=content_type)
+        parsed = self.parser_registry.parse(path, scope, source)
+        raw_chunks = await self.chunker.chunk_async(
+            parsed,
+            chunking or ChunkingConfig(),
+            semantic_embedding_client=semantic_embedding_client,
+        )
+        return self._bundle(parsed, raw_chunks, known_chunk_hashes)
+
+    def _bundle(self, parsed, raw_chunks, known_chunk_hashes: set[str] | None) -> IngestionBundle:
         chunks, duplicate_count = self.deduplicator.dedupe(raw_chunks, known_chunk_hashes)
         bundle = IngestionBundle(
             parsed_document=parsed,

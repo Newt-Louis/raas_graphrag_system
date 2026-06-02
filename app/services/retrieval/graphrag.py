@@ -127,9 +127,27 @@ class GraphRAGRetrievalService:
                 scope=graph_scope,
                 chunk_ids=list(dict.fromkeys([*seed_chunk_ids, *semantic_result.chunk_ids])),
             )
+            parent_chunk_ids = [
+                chunk.parent_chunk_id
+                for chunk in chunk_result.chunks
+                if chunk.parent_chunk_id
+            ]
+            if parent_chunk_ids:
+                parent_result = self.graph_store.chunk_context(
+                    scope=graph_scope,
+                    chunk_ids=list(dict.fromkeys(parent_chunk_ids)),
+                )
+                graph_chunks = list(
+                    {
+                        chunk.chunk_id: chunk
+                        for chunk in [*parent_result.chunks, *chunk_result.chunks]
+                    }.values()
+                )
+            else:
+                graph_chunks = chunk_result.chunks
         except KuzuGraphStoreError:
             return [], []
-        return chunk_result.chunks, semantic_result.entities
+        return graph_chunks, semantic_result.entities
 
 
 def _retrieval_strategy(
