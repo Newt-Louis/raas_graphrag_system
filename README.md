@@ -2,7 +2,7 @@
 
 Nền tảng GraphRAG-as-a-Service đa tenant cho phép phần mềm bên ngoài nạp tài liệu, cấu hình AI provider/model, trực quan hóa vector và knowledge graph, rồi nhúng giao diện chat hỏi đáp theo tài liệu.
 
-## Năng Lực Hiện Có
+## Chức năng hiện Có
 
 - Platform Admin quản lý provider, API key, embedding profile và LLM profile.
 - Ingest tài liệu: lưu registry PostgreSQL, parse, chunk, embed qua Gemini, index LanceDB và ghi graph Kuzu.

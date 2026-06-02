@@ -25,7 +25,7 @@ class KeyStatus(str, Enum):
 
 @dataclass(slots=True)
 class KeyConfig:
-    """Cấu hình 1 key. Map từ DB/Redis của bạn sang đây trước khi nạp vào pool."""
+    """Cấu hình 1 key. Map từ DB/Redis sang đây trước khi nạp vào pool."""
     id: str                       # định danh duy nhất (vd: str(api_config.id))
     provider: str                 # "openai" | "gemini" | "groq" | "anthropic" ...
     model_name: str               # tên model litellm: "gemini/gemini-2.0-flash" ...

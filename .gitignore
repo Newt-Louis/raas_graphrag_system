@@ -233,4 +233,4 @@ sample_data/
 
 # Documentation builds
 docs/*
-site/
+site/AGENTS.md
