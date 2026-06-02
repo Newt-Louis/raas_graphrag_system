@@ -101,8 +101,12 @@ class ChatAssistantBehavior:
     # -----------------------------------------------------------------------
     grounded_min_similarity: float = 0.6
     default_retrieval_top_k: int = 5
-    answer_temperature: float = 0.2
-    answer_max_tokens: int = 1_200
+    # Nhiệt độ cao hơn -> câu trả lời tự nhiên/đa dạng hơn nhưng vẫn bám context.
+    answer_temperature: float = 0.45
+    # Trần token đầu ra của LLM. Tăng để câu trả lời dài/đầy đủ hơn, tránh bị cắt
+    # giữa chừng (đặc biệt khi answer nằm trong JSON contract). Gemini 2.5 flash
+    # hỗ trợ tới ~8192 output token.
+    answer_max_tokens: int = 4_096
 
 
 DEFAULT_CHAT_BEHAVIOR = ChatAssistantBehavior()

@@ -14,6 +14,8 @@ from app.graphrag.graph_database import (
     KuzuGraphStore,
     get_kuzu_graph_store,
 )
+from app.ai_gateway import GatewayRequestContext
+from app.graphrag.llama_index import GatewayLLM
 from app.graphrag.vector_database import VectorDatabaseScope
 from app.graphrag.vector_database.factory import get_lancedb_vector_store
 from app.models.ai_gateway import EmbeddingModelProfile
@@ -75,11 +77,23 @@ class ChatCompletionService:
                 response_type="refusal",
             )
 
+        # Dựng LLM gateway một lần: vừa cho router/text2cypher (qua GatewayLLM) khi
+        # retrieval, vừa tái dùng cho bước sinh câu trả lời cuối.
+        llm_gateway = build_llm_gateway(
+            self.db,
+            tenant_id=payload.tenant_id,
+            app_id=payload.app_id,
+        )
+        router_llm = GatewayLLM(
+            self._router_acomplete(llm_gateway, payload),
+            max_tokens=self.behavior.answer_max_tokens,
+        )
         retrieval_service = GraphRAGRetrievalService(
             self.db,
             vector_store=self.vector_store,
             graph_store=self.graph_store,
             embedding_ai_client=GraphRAGAIClient(build_embedding_gateway(self.db)),
+            router_llm=router_llm,
         )
         retrieval = await retrieval_service.retrieve(
             scope=VectorDatabaseScope(
@@ -137,6 +151,16 @@ class ChatCompletionService:
                     )
                     for chunk in other_graph_chunks
                 ],
+                *[
+                    _ContextBlock(
+                        source="graph_query",
+                        document_id="knowledge-graph",
+                        chunk_id=f"graph-query-{index}",
+                        text=block.text,
+                        filename=None,
+                    )
+                    for index, block in enumerate(retrieval.graph_query_blocks)
+                ],
             ]
         )
         citations = _citations(context_blocks)
@@ -148,13 +172,7 @@ class ChatCompletionService:
             has_document_context=bool(context_blocks),
             behavior=self.behavior,
         )
-        llm_client = GraphRAGAIClient(
-            build_llm_gateway(
-                self.db,
-                tenant_id=payload.tenant_id,
-                app_id=payload.app_id,
-            )
-        )
+        llm_client = GraphRAGAIClient(llm_gateway)
         llm_result = await llm_client.synthesize_answer(
             messages,
             tenant_id=payload.tenant_id,
@@ -184,6 +202,28 @@ class ChatCompletionService:
             citations=[citation for citation in citations if citation.reference in used_references],
             usage=_combined_usage(retrieval.usage, llm_result.usage),
         )
+
+    def _router_acomplete(self, llm_gateway, payload: ChatCompletionRequest):
+        """Closure để GatewayLLM gọi LLM gateway cho router + text2cypher (temperature 0)."""
+        behavior = self.behavior
+
+        async def _acomplete(prompt: str) -> str:
+            result = await llm_gateway.complete(
+                [{"role": "user", "content": prompt}],
+                context=GatewayRequestContext(
+                    tenant_id=payload.tenant_id,
+                    app_id=payload.app_id,
+                    session_id=payload.session_id,
+                    endpoint="graphrag.retrieval.router",
+                ),
+                temperature=0.0,
+                max_tokens=behavior.answer_max_tokens,
+            )
+            if not result.success:
+                raise RuntimeError(result.final_reason or "Router LLM call failed.")
+            return result.data if isinstance(result.data, str) else str(result.data or "")
+
+        return _acomplete
 
     def _document_filename(self, document_id: str, metadata: dict | None = None) -> str | None:
         raw_filename = (metadata or {}).get("filename")

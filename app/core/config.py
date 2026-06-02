@@ -48,9 +48,11 @@ class Settings(BaseSettings):
 
     # End-user chat grounding
     CHAT_MIN_GROUNDED_SIMILARITY: float = 0.55
-    CHAT_CONTEXT_TOTAL_CHAR_LIMIT: int = 12_000
-    CHAT_CONTEXT_PER_CHUNK_CHAR_LIMIT: int = 1_800
-    CHAT_CONTEXT_MAX_BLOCKS: int = 8
+    # Ngân sách ngữ cảnh nạp vào LLM. Tăng để LLM có nhiều dẫn chứng hơn cho câu
+    # trả lời đầy đủ; có thể override qua .env nếu cần.
+    CHAT_CONTEXT_TOTAL_CHAR_LIMIT: int = 24_000
+    CHAT_CONTEXT_PER_CHUNK_CHAR_LIMIT: int = 3_000
+    CHAT_CONTEXT_MAX_BLOCKS: int = 12
 
     # Security
     SECRET_KEY: str

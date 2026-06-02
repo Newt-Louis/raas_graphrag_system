@@ -714,6 +714,14 @@ class KuzuGraphStore(PropertyGraphStore):
             "relations": list(_ALL_RELATION_ENDPOINTS),
         }
 
+    def get_schema_str(self, refresh: bool = False) -> str:
+        """Schema chi tiết cho text-to-cypher (node tables + props, rel tables + endpoints).
+
+        Phải đủ chính xác để LLM chỉ sinh OpenCypher trên đúng label/quan hệ/thuộc tính
+        có thật. Bỏ qua các cột nội bộ ít hữu ích cho truy vấn (id nội bộ, metadata_json).
+        """
+        return GRAPH_SCHEMA_STR
+
     def _upsert_llama_document(self, connection, scope: GraphDatabaseScope, node: EntityNode) -> None:
         properties = dict(node.properties or {})
         connection.execute(
@@ -1378,6 +1386,29 @@ class KuzuGraphStore(PropertyGraphStore):
             for row in mention_rows
         )
         return edges
+
+
+GRAPH_SCHEMA_STR = """Property graph schema (Kùzu / OpenCypher).
+
+Node tables (label and queryable properties):
+- Document(id, tenant_id, app_id, collection_id, document_id, filename, title, extension)
+- Element(id, tenant_id, app_id, collection_id, document_id, element_id, element_type, page_number, text)
+- Chunk(id, tenant_id, app_id, collection_id, document_id, chunk_id, chunk_index, text, strategy, parent_chunk_id, is_embeddable)
+- Entity(id, tenant_id, app_id, collection_id, entity_type, name, normalized_name, description)
+
+Relationship tables (direction is FROM -> TO):
+- HAS_ELEMENT: Document -> Element
+- HAS_CHUNK: Document -> Chunk
+- DERIVED_FROM: Chunk -> Element
+- NEXT_CHUNK: Chunk -> Chunk
+- PARENT_CHUNK: Chunk -> Chunk
+- MENTIONED_IN: Entity -> Chunk (properties: document_id, chunk_id)
+- SEMANTIC_RELATION: Entity -> Entity (properties: relation_type, description, confidence)
+
+Notes:
+- Knowledge entities live in the Entity table; semantic facts are edges SEMANTIC_RELATION between two Entity nodes with a relation_type.
+- Use Entity.normalized_name (lowercased, no accents) for case-insensitive name matching.
+- Every node carries tenant_id, app_id and collection_id for multi-tenant scoping."""
 
 
 _SCHEMA_STATEMENTS = [
