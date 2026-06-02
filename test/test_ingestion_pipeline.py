@@ -107,7 +107,7 @@ class IngestionPipelineTests(unittest.TestCase):
 
 
 class SemanticIngestionPipelineTests(unittest.IsolatedAsyncioTestCase):
-    async def test_semantic_chunking_groups_adjacent_sentences_above_similarity_threshold(self) -> None:
+    async def test_semantic_chunking_embeds_through_gateway_and_keeps_provenance(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "guide.txt"
             path.write_text(
@@ -125,33 +125,40 @@ class SemanticIngestionPipelineTests(unittest.IsolatedAsyncioTestCase):
                     strategy=ChunkStrategy.SEMANTIC,
                     max_tokens=100,
                     overlap_tokens=0,
-                    semantic_similarity_threshold=0.8,
+                    semantic_breakpoint_percentile=50,
                 ),
                 semantic_embedding_client=embedder,
             )
 
-        self.assertEqual(len(embedder.calls[0]), 3)
-        self.assertEqual(bundle.stats["vector_records"], 2)
-        self.assertIn("Refunds are available.", bundle.chunks[0].text)
-        self.assertIn("Returns are accepted.", bundle.chunks[0].text)
-        self.assertEqual(bundle.chunks[0].metadata["semantic_unit_count"], 2)
-        self.assertEqual(bundle.chunks[1].text, "Warehouse robots move crates.")
+        # Embedding cho semantic chunking đi qua gateway nội bộ (không phải hashing).
+        self.assertTrue(embedder.calls)
+        self.assertTrue(bundle.chunks)
+        self.assertTrue(all(chunk.metadata["chunk_role"] == "semantic" for chunk in bundle.chunks))
+        self.assertTrue(all(chunk.is_embeddable for chunk in bundle.chunks))
+        self.assertEqual(bundle.stats["vector_records"], len(bundle.chunks))
+        # Provenance giữ nguyên cho graph: chunk trỏ về source element của section.
+        self.assertTrue(all(chunk.source_element_ids for chunk in bundle.chunks))
+        joined = " ".join(chunk.text for chunk in bundle.chunks)
+        self.assertIn("Refunds are available.", joined)
+        self.assertIn("Warehouse robots move crates.", joined)
 
 
 class FakeSemanticEmbeddingClient:
+    """Embed theo từ khoá để SemanticSplitter có tín hiệu tách ý rõ ràng."""
+
     def __init__(self) -> None:
         self.calls: list[list[str]] = []
 
     async def embed_semantic_units(self, texts, **kwargs):
         self.calls.append(list(texts))
-        return RotationResult(
-            success=True,
-            data=[
-                [1.0, 0.0],
-                [0.99, 0.01],
-                [0.0, 1.0],
-            ],
-        )
+        data = []
+        for text in texts:
+            lowered = text.lower()
+            if any(word in lowered for word in ("warehouse", "robot", "crate")):
+                data.append([0.0, 1.0])
+            else:
+                data.append([1.0, 0.0])
+        return RotationResult(success=True, data=data)
 
 
 def _parsed_document(elements: list[StructuralElement]) -> ParsedDocument:

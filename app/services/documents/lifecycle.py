@@ -103,7 +103,14 @@ class DocumentLifecycleService:
             raise DocumentLifecycleError("Document metadata could not be saved.") from exc
         return document
 
-    def mark_document_ready(self, document: Document, *, vector_result: Any, graph_result: Any) -> Document:
+    def mark_document_ready(
+        self,
+        document: Document,
+        *,
+        vector_result: Any,
+        graph_result: Any,
+        semantic_graph_requested: bool = False,
+    ) -> Document:
         document.status = "ready"
         document.vector_record_count = vector_result.stored_count
         document.graph_record_count = graph_result.stored_count
@@ -114,8 +121,39 @@ class DocumentLifecycleService:
             "semantic_entity_count": graph_result.semantic_entity_count,
             "semantic_relation_count": graph_result.semantic_relation_count,
             "semantic_mention_count": graph_result.semantic_mention_count,
+            "semantic_graph_requested": semantic_graph_requested,
+            "semantic_graph_status": "queued" if semantic_graph_requested else "disabled",
         }
         self._commit_status_update("Document ready status could not be saved.")
+        return document
+
+    def mark_semantic_graph_completed(self, document_id: UUID, *, graph_result: Any) -> Document | None:
+        document = self.repository.get_document(document_id)
+        if document is None:
+            return None
+        warnings = list(graph_result.semantic_warnings)
+        document.metadata_json = {
+            **(document.metadata_json or {}),
+            "semantic_entity_count": graph_result.semantic_entity_count,
+            "semantic_relation_count": graph_result.semantic_relation_count,
+            "semantic_mention_count": graph_result.semantic_mention_count,
+            "semantic_graph_status": "completed_with_warnings" if warnings else "ready",
+            "semantic_graph_warnings": warnings,
+            "semantic_graph_completed_at": datetime.now(UTC).isoformat(),
+        }
+        self._commit_status_update("Semantic graph status could not be saved.")
+        return document
+
+    def mark_semantic_graph_failed(self, document_id: UUID, *, reason: str) -> Document | None:
+        document = self.repository.get_document(document_id)
+        if document is None:
+            return None
+        document.metadata_json = {
+            **(document.metadata_json or {}),
+            "semantic_graph_status": "failed",
+            "semantic_graph_error": reason,
+        }
+        self._commit_status_update("Semantic graph failed status could not be saved.")
         return document
 
     def mark_document_failed(self, document: Document, *, reason: str) -> Document:

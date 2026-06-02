@@ -1,15 +1,16 @@
 from __future__ import annotations
 
+import logging
 import re
 from pathlib import Path
 from uuid import UUID
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.db.session import get_db
+from app.db.session import SessionLocal, get_db
 from app.graphrag.ai_client import GraphRAGAIClient
 from app.graphrag.graph_database import (
     GraphDatabaseScope,
@@ -55,6 +56,13 @@ from app.services.ingestion.parsers import (
 )
 
 router = APIRouter(prefix="/ingest", tags=["ingest"])
+logger = logging.getLogger("ingest")
+
+_SEMANTIC_GRAPH_BACKGROUND_ROTATOR_OPTIONS = {
+    "max_attempts": 2,
+    "max_retry_same": 0,
+    "wait_for_cooldown": False,
+}
 
 
 @router.get("", response_model=SupportedFormatsResponse)
@@ -67,6 +75,7 @@ async def supported_formats() -> SupportedFormatsResponse:
 
 @router.post("", response_model=DocumentIngestResponse, status_code=status.HTTP_201_CREATED)
 async def ingest_document(
+    background_tasks: BackgroundTasks,
     tenant_id: str = Form(..., min_length=1),
     app_id: str = Form(..., min_length=1),
     collection_id: str | None = Form(default=None),
@@ -75,7 +84,7 @@ async def ingest_document(
     overlap_tokens: int = Form(default=80, ge=0, le=1000),
     parent_max_tokens: int = Form(default=1800, ge=100),
     semantic_similarity_threshold: float = Form(default=0.72, ge=0.0, le=1.0),
-    extract_semantic_graph: bool = Form(default=True),
+    extract_semantic_graph: bool = Form(default=False),
     llm_profile_id: UUID | None = Form(default=None),
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
@@ -160,16 +169,12 @@ async def ingest_document(
             collection_id=collection_id,
             chunks=bundle.chunks,
         )
-        graph_result = await _persist_graph_bundle_to_kuzu(
-            db=db,
-            bundle=bundle,
-            extract_semantic_graph=extract_semantic_graph,
-            llm_profile_id=llm_profile_id,
-        )
+        graph_result = await _persist_graph_structure_to_kuzu(bundle=bundle)
         document_service.mark_document_ready(
             document,
             vector_result=vector_result,
             graph_result=graph_result,
+            semantic_graph_requested=extract_semantic_graph,
         )
     except Exception as exc:
         _cleanup_indexed_artifacts(bundle)
@@ -178,6 +183,15 @@ async def ingest_document(
         except DocumentLifecycleError:
             pass
         raise
+
+    if extract_semantic_graph:
+        background_tasks.add_task(
+            _extract_semantic_graph_in_background,
+            bundle=bundle,
+            document_id=document.id,
+            graph_result=graph_result,
+            llm_profile_id=llm_profile_id,
+        )
 
     source = bundle.parsed_document.source
     return DocumentIngestResponse(
@@ -199,7 +213,15 @@ async def ingest_document(
         semantic_entity_count=graph_result.semantic_entity_count,
         semantic_relation_count=graph_result.semantic_relation_count,
         semantic_mention_count=graph_result.semantic_mention_count,
-        warnings=[*bundle.warnings, *graph_result.semantic_warnings],
+        warnings=[
+            *bundle.warnings,
+            *graph_result.semantic_warnings,
+            *(
+                ["Semantic graph extraction was queued as a background enrichment task."]
+                if extract_semantic_graph
+                else []
+            ),
+        ],
     )
 
 
@@ -304,16 +326,23 @@ async def _persist_chunks_to_lancedb(
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
 
 
-async def _persist_graph_bundle_to_kuzu(
-    *,
-    db: Session,
-    bundle,
-    extract_semantic_graph: bool,
-    llm_profile_id: UUID | None,
-):
+async def _persist_graph_structure_to_kuzu(*, bundle):
     try:
-        semantic_extractor = None
-        if extract_semantic_graph:
+        return await GraphRAGIngestionPipeline().ingest_graph(bundle)
+    except KuzuGraphStoreError as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
+
+
+async def _extract_semantic_graph_in_background(
+    *,
+    bundle,
+    document_id: UUID,
+    graph_result,
+    llm_profile_id: UUID | None,
+) -> None:
+    with SessionLocal() as db:
+        service = DocumentLifecycleService(db)
+        try:
             scope = bundle.parsed_document.scope
             semantic_extractor = SemanticGraphExtractor(
                 GraphRAGAIClient(
@@ -322,18 +351,31 @@ async def _persist_graph_bundle_to_kuzu(
                         tenant_id=scope.tenant_id,
                         app_id=scope.app_id,
                         profile_id=llm_profile_id,
+                        rotator_options=_SEMANTIC_GRAPH_BACKGROUND_ROTATOR_OPTIONS,
                     )
                 ),
                 profile_id=str(llm_profile_id) if llm_profile_id else None,
             )
-        return await GraphRAGIngestionPipeline().ingest_graph(
-            bundle,
-            semantic_extractor=semantic_extractor,
-        )
-    except AIGatewayRuntimeError as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
-    except KuzuGraphStoreError as exc:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
+            graph_result = await GraphRAGIngestionPipeline().extract_semantic_graph(
+                bundle,
+                semantic_extractor=semantic_extractor,
+                base_result=graph_result,
+            )
+            service.mark_semantic_graph_completed(document_id, graph_result=graph_result)
+        except Exception as exc:  # noqa: BLE001 - enrichment errors must not invalidate indexed documents
+            logger.warning(
+                "Semantic graph background enrichment failed for document=%s error_type=%s",
+                document_id,
+                type(exc).__name__,
+            )
+            try:
+                service.mark_semantic_graph_failed(document_id, reason=type(exc).__name__)
+            except Exception as status_exc:  # noqa: BLE001 - the upload response was already sent
+                logger.warning(
+                    "Semantic graph failure status could not be saved for document=%s error_type=%s",
+                    document_id,
+                    type(status_exc).__name__,
+                )
 
 
 def _graph_context_for_matches(

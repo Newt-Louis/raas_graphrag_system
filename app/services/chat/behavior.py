@@ -99,7 +99,7 @@ class ChatAssistantBehavior:
     # Runtime knobs
     # Later: expose these through platform-admin configuration.
     # -----------------------------------------------------------------------
-    grounded_min_similarity: float = 0.5
+    grounded_min_similarity: float = 0.6
     default_retrieval_top_k: int = 5
     answer_temperature: float = 0.2
     answer_max_tokens: int = 1_200

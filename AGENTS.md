@@ -135,7 +135,14 @@ Luôn giữ chiều phụ thuộc rõ để tránh trộn trách nhiệm: API ->
   - Ingestion structure graph và semantic graph phải đi qua `PropertyGraphIndex`.
   - Kuzu dùng `KuzuGraphStore` triển khai `PropertyGraphStore` bridge riêng vì adapter mặc định của LlamaIndex không giữ đủ tenant/app/document metadata cần cho GraphRAG-as-a-Service.
   - Retrieval graph phải đi qua QueryEngine/retriever contract. Structured query chỉ nằm bên trong bridge cho visualization, stats, delete và traversal implementation.
+- Chunking:
+  - `app/services/ingestion/chunking.py` (`DocumentChunker`) dùng node parser LlamaIndex: `sliding_window`->`SentenceSplitter`, `parent_child`->`HierarchicalNodeParser`, `semantic`->`SemanticSplitterNodeParser`. Tokenizer truyền `cl100k_base` để khớp `_token_count`.
+  - Mỗi structural section (đã tách theo trang/slide/sheet/heading) là một LlamaIndex `Document` riêng nên chunk không vượt ranh giới trang và thừa hưởng đúng `source_element_ids`.
+  - GIỮ NGUYÊN hợp đồng đầu ra `DocumentChunker.chunk()/chunk_async()->list[DocumentChunk]` với provenance (`source_element_ids`, `parent_chunk_id`, `is_embeddable`, `chunk_role`, page/boundary) để graph/vector phía sau không phải đổi. Khi sửa chunking, không phá hợp đồng này.
+  - Semantic chunking cắt theo `semantic_breakpoint_percentile` (mặc định 95) của phân phối khoảng cách, không phải cosine threshold thô. `semantic_similarity_threshold` cũ giữ lại chỉ để tương thích form, chunker không dùng.
+- Embedding cho LlamaIndex node parser (SemanticSplitter) đi qua `app/graphrag/llama_index/embedding.py::GatewayEmbedding` — một `BaseEmbedding` bọc embedding gateway nội bộ (google-genai SDK). KHÔNG dùng `llama-index-embeddings-*`. `GatewayEmbedding` bridge async->sync; chunker chạy SemanticSplitter trong `asyncio.to_thread`.
 - LLM synthesis và embedding API vẫn gọi trực tiếp qua AI Gateway hiện hữu. Không đưa `llama-index-llms-litellm` hoặc `llama-index-embeddings-google-genai` vào runtime chỉ để thêm một lớp trung gian.
+- Batching embedding: adapter `app/ai_gateway/embedding_gemini.py` gom nhiều `Content` vào một `embed_content` (sub-batch theo `batch_size`), mặc định cap `DEFAULT_EMBEDDING_BATCH_SIZE=100` khi profile không khai báo, và retry/backoff khi gặp 429/RESOURCE_EXHAUSTED/503. Số lần gọi API = `ceil(số_item/batch_size)`; semantic tốn hơn vì phải embed từng câu để dò ranh giới (bản chất thuật toán, không phải bug).
 - Không thêm lại pipeline LanceDB/Kuzu chạy song song bên ngoài `app/graphrag/`. Các compatibility service cũ nếu còn tồn tại phải delegate vào adapter LlamaIndex.
 - Giai đoạn sau:
   - TODO: dùng ChatEngine khi có persisted chat memory/history.

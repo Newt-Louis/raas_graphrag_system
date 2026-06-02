@@ -10,6 +10,7 @@ from app.graphrag.graph_database import (
     KuzuGraphStore,
     SemanticEntity,
     SemanticExtraction,
+    SemanticExtractionError,
     SemanticRelation,
 )
 from app.graphrag.graph_database.semantic_extraction import parse_semantic_extraction
@@ -186,12 +187,36 @@ class KuzuGraphDatabaseTests(unittest.TestCase):
         self.assertGreater(result.semantic_entity_count, 0)
         self.assertGreater(result.semantic_mention_count, 0)
 
+    def test_semantic_graph_enrichment_records_chunk_failures_as_warnings(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bundle = _bundle(temp_dir, tenant_id="tenant-a", app_id="app-a")
+            store = KuzuGraphStore(Path(temp_dir) / "kuzu" / "graph.db")
+            pipeline = GraphRAGIngestionPipeline(store)
+            structure_result = run(pipeline.ingest_graph(bundle))
+
+            result = run(
+                pipeline.extract_semantic_graph(
+                    bundle,
+                    semantic_extractor=FailingSemanticExtractor(),
+                    base_result=structure_result,
+                )
+            )
+
+        self.assertEqual(result.stored_count, structure_result.stored_count)
+        self.assertEqual(result.semantic_entity_count, 0)
+        self.assertTrue(result.semantic_warnings)
+
 
 class FakeSemanticExtractor:
     async def extract_chunk(self, text, **kwargs):
         return SemanticExtraction(
             entities=[SemanticEntity("e1", "Technology", "LanceDB", "lancedb")],
         )
+
+
+class FailingSemanticExtractor:
+    async def extract_chunk(self, text, **kwargs):
+        raise SemanticExtractionError("Provider unavailable.")
 
 
 def _bundle(temp_dir: str, *, tenant_id: str, app_id: str):

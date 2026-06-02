@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import Button from 'primevue/button'
+import Checkbox from 'primevue/checkbox'
 import Column from 'primevue/column'
 import DataTable from 'primevue/datatable'
 import Dialog from 'primevue/dialog'
@@ -81,6 +82,7 @@ const form = reactive({
   overlap_tokens: 80,
   parent_max_tokens: 1800,
   semantic_similarity_threshold: 0.72,
+  extract_semantic_graph: false,
 })
 
 const chunkStrategyOptions: ChunkStrategyOption[] = [
@@ -241,7 +243,7 @@ function buildFormData(file: File) {
   data.append('overlap_tokens', String(form.overlap_tokens))
   data.append('parent_max_tokens', String(form.parent_max_tokens))
   data.append('semantic_similarity_threshold', String(form.semantic_similarity_threshold))
-  data.append('extract_semantic_graph', 'true')
+  data.append('extract_semantic_graph', String(form.extract_semantic_graph))
   data.append('file', file)
   return data
 }
@@ -471,6 +473,17 @@ function formatDate(value: string | null) {
           show-buttons
           input-class="full-input"
         />
+      </label>
+      <label class="form-field col-3 col-md-4 col-sm-6">
+        <span>semantic graph enrichment</span>
+        <span>
+          <Checkbox
+            v-model="form.extract_semantic_graph"
+            :binary="true"
+            input-id="extract-semantic-graph"
+          />
+          <span class="ml-2">Run in background</span>
+        </span>
       </label>
     </form>
 

@@ -85,7 +85,13 @@ class ChunkingConfig:
     overlap_tokens: int = 80
     min_tokens: int = 40
     parent_max_tokens: int = 1_800
+    # Giữ lại để tương thích form cũ; chunker LlamaIndex dùng percentile bên dưới.
     semantic_similarity_threshold: float = 0.72
+    # SemanticSplitterNodeParser cắt chunk khi khoảng cách ngữ nghĩa giữa các câu
+    # vượt percentile này của phân phối khoảng cách. 95 là mặc định chuẩn.
+    semantic_breakpoint_percentile: int = 95
+    # Số câu đệm gom quanh mỗi câu khi tính embedding ranh giới (semantic).
+    semantic_buffer_size: int = 1
 
 
 @dataclass

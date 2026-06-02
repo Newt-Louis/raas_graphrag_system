@@ -1,10 +1,21 @@
 from __future__ import annotations
 
-import math
+import asyncio
 import re
+from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from llama_index.core.node_parser import (
+    HierarchicalNodeParser,
+    SemanticSplitterNodeParser,
+    SentenceSplitter,
+    get_leaf_nodes,
+    get_root_nodes,
+)
+from llama_index.core.schema import BaseNode, Document, MetadataMode, NodeRelationship
+
+from app.graphrag.llama_index import GatewayEmbedding
 from app.services.ingestion.deduplication import content_hash
 from app.services.ingestion.models import (
     ChunkStrategy,
@@ -22,7 +33,6 @@ except ModuleNotFoundError:  # pragma: no cover - fallback for minimal deploymen
 
 
 _TOKEN_RE = re.compile(r"\S+")
-_SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[.!?])(?:[\"')\]]*)\s+|\n+")
 _TOKEN_ENCODING = tiktoken.get_encoding("cl100k_base") if tiktoken is not None else None
 
 
@@ -43,69 +53,17 @@ class _StructuralSection:
     boundary_value: str | int | None = None
 
 
-@dataclass(frozen=True)
-class _SemanticUnit:
-    text: str
-    embedding_text: str
-    source_element_ids: list[str]
-    prefix: str = ""
-    prefix_element_ids: list[str] | None = None
-
-
 def _token_count(text: str) -> int:
     if _TOKEN_ENCODING is not None:
         return len(_TOKEN_ENCODING.encode(text))
     return len(_TOKEN_RE.findall(text))
 
 
-def _window_text(text: str, max_tokens: int, overlap_tokens: int) -> list[str]:
-    if max_tokens <= 0:
-        return []
-    if _TOKEN_ENCODING is None:
-        return _fallback_window_text(text, max_tokens, overlap_tokens)
-
-    tokens = _TOKEN_ENCODING.encode(text)
-    if not tokens:
-        return []
-    if len(tokens) <= max_tokens:
-        return [text.strip()]
-
-    windows: list[str] = []
-    for start in _window_starts(len(tokens), max_tokens, overlap_tokens):
-        window = tokens[start : start + max_tokens]
-        decoded = _TOKEN_ENCODING.decode(window).strip()
-        if decoded:
-            windows.append(decoded)
-    return windows
-
-
-def _fallback_window_text(text: str, max_tokens: int, overlap_tokens: int) -> list[str]:
-    tokens = _TOKEN_RE.findall(text)
-    if not tokens:
-        return []
-    if len(tokens) <= max_tokens:
-        return [" ".join(tokens)]
-
-    windows: list[str] = []
-    for start in _window_starts(len(tokens), max_tokens, overlap_tokens):
-        window = tokens[start : start + max_tokens]
-        windows.append(" ".join(window))
-    return windows
-
-
-def _window_starts(token_count: int, max_tokens: int, overlap_tokens: int) -> list[int]:
-    if token_count <= max_tokens:
-        return [0]
-    step = max(1, max_tokens - overlap_tokens)
-    starts = [0]
-    while starts[-1] + max_tokens < token_count:
-        next_start = starts[-1] + step
-        if next_start + max_tokens >= token_count:
-            next_start = token_count - max_tokens
-        if next_start <= starts[-1]:
-            break
-        starts.append(next_start)
-    return starts
+def _llama_tokenizer(text: str) -> list[Any]:
+    """Tokenizer cho SentenceSplitter, khớp cách đếm token của hệ thống (cl100k)."""
+    if _TOKEN_ENCODING is not None:
+        return _TOKEN_ENCODING.encode(text)
+    return _TOKEN_RE.findall(text)
 
 
 def _element_text(element: StructuralElement) -> str:
@@ -145,6 +103,21 @@ def _section_metadata(section: _StructuralSection) -> dict[str, object]:
 
 
 class DocumentChunker:
+    """Cắt tài liệu thành chunk bằng các node parser của LlamaIndex.
+
+    Giữ nguyên hợp đồng đầu ra (``list[DocumentChunk]`` kèm provenance:
+    ``source_element_ids``, ``parent_chunk_id``, ``is_embeddable``, ``chunk_role``,
+    page/boundary) để lớp graph (Kuzu) và vector (LanceDB) phía sau không phải đổi.
+
+    - ``sliding_window`` -> ``SentenceSplitter``
+    - ``parent_child``   -> ``HierarchicalNodeParser`` (node cha + con, liên kết PARENT/CHILD)
+    - ``semantic``       -> ``SemanticSplitterNodeParser`` (embedding qua gateway nội bộ)
+
+    Mỗi structural section (đã tách theo trang/slide/sheet/heading) trở thành một
+    LlamaIndex ``Document`` riêng nên chunk không vượt ranh giới trang và thừa hưởng
+    đúng ``source_element_ids`` của section.
+    """
+
     def chunk(self, document: ParsedDocument, config: ChunkingConfig) -> list[DocumentChunk]:
         if config.strategy == ChunkStrategy.SEMANTIC:
             raise SemanticChunkingError(
@@ -167,334 +140,205 @@ class DocumentChunker:
             raise SemanticChunkingError("Semantic chunking requires an embedding client.")
         return await self._semantic(document, config, semantic_embedding_client)
 
-    def _sliding_window(
-        self, document: ParsedDocument, config: ChunkingConfig
-    ) -> list[DocumentChunk]:
+    # ------------------------------------------------------------------ sliding
+    def _sliding_window(self, document: ParsedDocument, config: ChunkingConfig) -> list[DocumentChunk]:
+        splitter = SentenceSplitter(
+            chunk_size=max(1, config.max_tokens),
+            chunk_overlap=max(0, min(config.overlap_tokens, config.max_tokens - 1)),
+            tokenizer=_llama_tokenizer,
+        )
         chunks: list[DocumentChunk] = []
-        for section in self._sections(document):
-            section_text = self._section_text(section)
-            if not section_text:
-                continue
-            chunks.extend(
-                self._make_chunks(
+        for llama_doc, section_meta in self._section_documents(document):
+            for node in splitter.get_nodes_from_documents([llama_doc]):
+                chunk = self._chunk_from_node(
+                    node,
                     document_id=document.source.document_id,
-                    text=section_text,
-                    element_ids=self._element_ids(section),
-                    config=config,
+                    chunk_index=len(chunks),
                     strategy=ChunkStrategy.SLIDING_WINDOW,
-                    start_index=len(chunks),
-                    metadata={
-                        "chunk_role": "window",
-                        **_section_metadata(section),
-                    },
+                    role="window",
+                    is_embeddable=True,
+                    chunk_id=f"{document.source.document_id}:chunk:{len(chunks)}",
                 )
-            )
+                if chunk is not None:
+                    chunks.append(chunk)
         return chunks
 
+    # ------------------------------------------------------------- parent_child
+    def _parent_child(self, document: ParsedDocument, config: ChunkingConfig) -> list[DocumentChunk]:
+        parent_size = max(config.max_tokens, config.parent_max_tokens)
+        overlap = max(0, min(config.overlap_tokens, config.max_tokens - 1))
+        level_splitters = [
+            SentenceSplitter(chunk_size=parent_size, chunk_overlap=overlap, tokenizer=_llama_tokenizer),
+            SentenceSplitter(chunk_size=config.max_tokens, chunk_overlap=overlap, tokenizer=_llama_tokenizer),
+        ]
+        node_parser_ids = ["parent_level", "child_level"]
+        parser = HierarchicalNodeParser.from_defaults(
+            node_parser_ids=node_parser_ids,
+            node_parser_map=dict(zip(node_parser_ids, level_splitters, strict=True)),
+        )
+
+        documents = [llama_doc for llama_doc, _ in self._section_documents(document)]
+        if not documents:
+            return []
+        all_nodes = parser.get_nodes_from_documents(documents)
+        roots = get_root_nodes(all_nodes)
+        leaves_by_parent: dict[str | None, list[BaseNode]] = defaultdict(list)
+        for leaf in get_leaf_nodes(all_nodes):
+            parent_info = leaf.relationships.get(NodeRelationship.PARENT)
+            leaves_by_parent[parent_info.node_id if parent_info else None].append(leaf)
+
+        chunks: list[DocumentChunk] = []
+        node_id_to_chunk_id: dict[str, str] = {}
+        parent_counter = 0
+        child_counter = 0
+        for root in roots:
+            parent_chunk_id = f"{document.source.document_id}:parent:{parent_counter}"
+            parent_counter += 1
+            node_id_to_chunk_id[root.node_id] = parent_chunk_id
+            parent_chunk = self._chunk_from_node(
+                root,
+                document_id=document.source.document_id,
+                chunk_index=len(chunks),
+                strategy=ChunkStrategy.PARENT_CHILD,
+                role="parent",
+                is_embeddable=False,
+                chunk_id=parent_chunk_id,
+            )
+            if parent_chunk is None:
+                continue
+            chunks.append(parent_chunk)
+            for leaf in leaves_by_parent.get(root.node_id, []):
+                child_chunk_id = f"{document.source.document_id}:child:{child_counter}"
+                child_counter += 1
+                child_chunk = self._chunk_from_node(
+                    leaf,
+                    document_id=document.source.document_id,
+                    chunk_index=len(chunks),
+                    strategy=ChunkStrategy.PARENT_CHILD,
+                    role="child",
+                    is_embeddable=True,
+                    chunk_id=child_chunk_id,
+                    parent_chunk_id=parent_chunk_id,
+                )
+                if child_chunk is not None:
+                    chunks.append(child_chunk)
+        return chunks
+
+    # ----------------------------------------------------------------- semantic
     async def _semantic(
         self,
         document: ParsedDocument,
         config: ChunkingConfig,
         embedding_client: SemanticEmbeddingClient,
     ) -> list[DocumentChunk]:
-        sections_with_units = [
-            (section, self._semantic_units(section, config))
-            for section in self._sections(document)
-        ]
-        all_units = [
-            unit
-            for _, units in sections_with_units
-            for unit in units
-        ]
-        if not all_units:
-            return []
-
-        result = await embedding_client.embed_semantic_units(
-            [unit.embedding_text for unit in all_units],
-            tenant_id=document.scope.tenant_id,
-            app_id=document.scope.app_id,
-            collection_id=document.scope.collection_id,
+        embed_model = GatewayEmbedding(
+            self._semantic_embed_fn(document, embedding_client),
+            embed_batch_size=100,
         )
-        vectors = self._semantic_vectors(result, expected_count=len(all_units))
+        parser = SemanticSplitterNodeParser(
+            embed_model=embed_model,
+            buffer_size=max(1, config.semantic_buffer_size),
+            breakpoint_percentile_threshold=max(1, min(99, config.semantic_breakpoint_percentile)),
+        )
+        documents = [llama_doc for llama_doc, _ in self._section_documents(document)]
+        if not documents:
+            return []
+        # SemanticSplitter chạy sync và gọi embedding kiểu sync; chạy trong thread
+        # riêng để GatewayEmbedding bridge async->sync an toàn ngoài event loop chính.
+        nodes = await asyncio.to_thread(parser.get_nodes_from_documents, documents)
+
         chunks: list[DocumentChunk] = []
-        vector_offset = 0
-        for section, units in sections_with_units:
-            section_vectors = vectors[vector_offset : vector_offset + len(units)]
-            vector_offset += len(units)
-            chunks.extend(
-                self._semantic_section_chunks(
-                    document_id=document.source.document_id,
-                    section=section,
-                    units=units,
-                    vectors=section_vectors,
-                    config=config,
-                    start_index=len(chunks),
-                )
+        for node in nodes:
+            chunk = self._chunk_from_node(
+                node,
+                document_id=document.source.document_id,
+                chunk_index=len(chunks),
+                strategy=ChunkStrategy.SEMANTIC,
+                role="semantic",
+                is_embeddable=True,
+                chunk_id=f"{document.source.document_id}:semantic:{len(chunks)}",
             )
+            if chunk is not None:
+                chunks.append(chunk)
         return chunks
 
-    def _parent_child(
-        self, document: ParsedDocument, config: ChunkingConfig
-    ) -> list[DocumentChunk]:
-        chunks: list[DocumentChunk] = []
-        parent_index = 0
-        parent_max_tokens = max(config.max_tokens, config.parent_max_tokens)
+    def _semantic_embed_fn(self, document: ParsedDocument, client: SemanticEmbeddingClient):
+        scope = document.scope
+
+        async def _embed(texts: list[str]) -> list[list[float]]:
+            result = await client.embed_semantic_units(
+                texts,
+                tenant_id=scope.tenant_id,
+                app_id=scope.app_id,
+                collection_id=scope.collection_id,
+            )
+            if not getattr(result, "success", False):
+                raise SemanticChunkingError(
+                    getattr(result, "final_reason", None) or "Semantic sentence embedding failed."
+                )
+            vectors = getattr(result, "data", None)
+            if not isinstance(vectors, list) or len(vectors) != len(texts):
+                raise SemanticChunkingError(
+                    f"Semantic chunking received {len(vectors) if isinstance(vectors, list) else 0} "
+                    f"vectors for {len(texts)} text units."
+                )
+            return vectors
+
+        return _embed
+
+    # ------------------------------------------------------------------ helpers
+    def _section_documents(self, document: ParsedDocument) -> list[tuple[Document, dict[str, object]]]:
+        documents: list[tuple[Document, dict[str, object]]] = []
         for section in self._sections(document):
             section_text = self._section_text(section)
             if not section_text:
                 continue
+            metadata: dict[str, object] = {
+                **_section_metadata(section),
+                "source_element_ids": self._element_ids(section),
+            }
+            llama_doc = Document(text=section_text, metadata=dict(metadata))
+            # Không để metadata lọt vào text embedding/LLM khi parser xử lý.
+            llama_doc.excluded_embed_metadata_keys = list(metadata.keys())
+            llama_doc.excluded_llm_metadata_keys = list(metadata.keys())
+            documents.append((llama_doc, metadata))
+        return documents
 
-            element_ids = self._element_ids(section)
-            for parent_text in _window_text(section_text, parent_max_tokens, 0):
-                parent_id = f"{document.source.document_id}:parent:{parent_index}"
-                parent_index += 1
-                parent_metadata = {
-                    "chunk_role": "parent",
-                    "token_count": _token_count(parent_text),
-                    **_section_metadata(section),
-                }
-                chunks.append(
-                    DocumentChunk(
-                        chunk_id=parent_id,
-                        document_id=document.source.document_id,
-                        chunk_index=len(chunks),
-                        text=parent_text,
-                        strategy=ChunkStrategy.PARENT_CHILD,
-                        source_element_ids=element_ids,
-                        content_hash=content_hash(parent_text),
-                        is_embeddable=False,
-                        metadata=parent_metadata,
-                    )
-                )
-
-                for child_text in _window_text(parent_text, config.max_tokens, config.overlap_tokens):
-                    chunk_index = len(chunks)
-                    chunks.append(
-                        DocumentChunk(
-                            chunk_id=f"{document.source.document_id}:child:{chunk_index}",
-                            document_id=document.source.document_id,
-                            chunk_index=chunk_index,
-                            text=child_text,
-                            strategy=ChunkStrategy.PARENT_CHILD,
-                            source_element_ids=element_ids,
-                            content_hash=content_hash(child_text),
-                            parent_chunk_id=parent_id,
-                            is_embeddable=True,
-                            metadata={
-                                "chunk_role": "child",
-                                "token_count": _token_count(child_text),
-                                **_section_metadata(section),
-                            },
-                        )
-                    )
-        return chunks
-
-    def _semantic_units(
+    def _chunk_from_node(
         self,
-        section: _StructuralSection,
-        config: ChunkingConfig,
-    ) -> list[_SemanticUnit]:
-        units: list[_SemanticUnit] = []
-        prefix_parts: list[str] = []
-        prefix_element_ids: list[str] = []
-        for element in section.elements:
-            text = _element_text(element)
-            if not text:
-                continue
-            if element.element_type in {ElementType.TITLE, ElementType.HEADING}:
-                prefix_parts.append(text)
-                prefix_element_ids.append(element.element_id)
-                continue
-            for part in self._semantic_element_parts(element):
-                prefix = self._semantic_prefix(prefix_parts, config.max_tokens)
-                prefix_tokens = _token_count(prefix)
-                unit_max_tokens = max(1, config.max_tokens - prefix_tokens - (2 if prefix else 0))
-                for window in _window_text(part, unit_max_tokens, min(config.overlap_tokens, unit_max_tokens - 1)):
-                    units.append(
-                        _SemanticUnit(
-                            text=window,
-                            embedding_text=f"{prefix}\n{window}".strip(),
-                            source_element_ids=[element.element_id],
-                            prefix=prefix,
-                            prefix_element_ids=list(prefix_element_ids),
-                        )
-                    )
-
-        if not units and prefix_parts:
-            prefix = "\n".join(prefix_parts)
-            units.append(
-                _SemanticUnit(
-                    text=prefix,
-                    embedding_text=prefix,
-                    source_element_ids=list(prefix_element_ids),
-                )
-            )
-        return units
-
-    def _semantic_prefix(self, prefix_parts: list[str], max_tokens: int) -> str:
-        prefix = "\n".join(prefix_parts)
-        if _token_count(prefix) <= max(0, max_tokens - 2):
-            return prefix
-        windows = _window_text(prefix, max(1, max_tokens // 4), 0)
-        return windows[0] if windows else ""
-
-    def _semantic_element_parts(self, element: StructuralElement) -> list[str]:
-        text = _element_text(element)
-        if not text:
-            return []
-        if element.element_type == ElementType.TABLE and element.table:
-            return [
-                " | ".join(cell.strip() for cell in row)
-                for row in element.table
-                if any(cell.strip() for cell in row)
-            ]
-        if element.element_type in {ElementType.CODE, ElementType.JSON_RECORD, ElementType.IMAGE}:
-            return [text]
-        return [part.strip() for part in _SENTENCE_BOUNDARY_RE.split(text) if part.strip()]
-
-    def _semantic_vectors(self, result, *, expected_count: int) -> list[list[float]]:
-        if not getattr(result, "success", False):
-            raise SemanticChunkingError(
-                getattr(result, "final_reason", None) or "Semantic sentence embedding failed."
-            )
-        vectors = getattr(result, "data", None)
-        if not isinstance(vectors, list) or len(vectors) != expected_count:
-            raise SemanticChunkingError(
-                f"Semantic chunking received {len(vectors) if isinstance(vectors, list) else 0} "
-                f"vectors for {expected_count} text units."
-            )
-        if not all(
-            isinstance(vector, list)
-            and vector
-            and all(isinstance(value, (int, float)) for value in vector)
-            for vector in vectors
-        ):
-            raise SemanticChunkingError("Semantic chunking received malformed embedding vectors.")
-        return vectors
-
-    def _semantic_section_chunks(
-        self,
+        node: BaseNode,
         *,
         document_id: str,
-        section: _StructuralSection,
-        units: list[_SemanticUnit],
-        vectors: list[list[float]],
-        config: ChunkingConfig,
-        start_index: int,
-    ) -> list[DocumentChunk]:
-        if not units:
-            return []
-
-        chunks: list[DocumentChunk] = []
-        current_units = [units[0]]
-        similarities: list[float] = []
-        for previous_vector, unit, vector in zip(vectors, units[1:], vectors[1:], strict=False):
-            similarity = _cosine_similarity(previous_vector, vector)
-            candidate_text = self._semantic_chunk_text([*current_units, unit])
-            if (
-                similarity < config.semantic_similarity_threshold
-                or _token_count(candidate_text) > config.max_tokens
-            ):
-                chunks.append(
-                    self._semantic_chunk(
-                        document_id=document_id,
-                        section=section,
-                        units=current_units,
-                        similarities=similarities,
-                        threshold=config.semantic_similarity_threshold,
-                        chunk_index=start_index + len(chunks),
-                    )
-                )
-                current_units = [unit]
-                similarities = []
-                continue
-            current_units.append(unit)
-            similarities.append(similarity)
-
-        chunks.append(
-            self._semantic_chunk(
-                document_id=document_id,
-                section=section,
-                units=current_units,
-                similarities=similarities,
-                threshold=config.semantic_similarity_threshold,
-                chunk_index=start_index + len(chunks),
-            )
-        )
-        return chunks
-
-    def _semantic_chunk(
-        self,
-        *,
-        document_id: str,
-        section: _StructuralSection,
-        units: list[_SemanticUnit],
-        similarities: list[float],
-        threshold: float,
         chunk_index: int,
-    ) -> DocumentChunk:
-        text = self._semantic_chunk_text(units)
+        strategy: ChunkStrategy,
+        role: str,
+        is_embeddable: bool,
+        chunk_id: str,
+        parent_chunk_id: str | None = None,
+    ) -> DocumentChunk | None:
+        text = node.get_content(metadata_mode=MetadataMode.NONE).strip()
+        if not text:
+            return None
+        meta = node.metadata or {}
+        chunk_metadata: dict[str, Any] = {
+            "chunk_role": role,
+            "token_count": _token_count(text),
+        }
+        for key in ("section_index", "boundary_type", "boundary_value", "media"):
+            if key in meta:
+                chunk_metadata[key] = meta[key]
         return DocumentChunk(
-            chunk_id=f"{document_id}:semantic:{chunk_index}",
+            chunk_id=chunk_id,
             document_id=document_id,
             chunk_index=chunk_index,
             text=text,
-            strategy=ChunkStrategy.SEMANTIC,
-            source_element_ids=_unique(
-                [
-                    element_id
-                    for unit in units
-                    for element_id in [*(unit.prefix_element_ids or []), *unit.source_element_ids]
-                ]
-            ),
+            strategy=strategy,
+            source_element_ids=list(meta.get("source_element_ids") or []),
             content_hash=content_hash(text),
-            metadata={
-                "chunk_role": "semantic",
-                "semantic_unit_count": len(units),
-                "semantic_similarity_threshold": threshold,
-                "semantic_min_adjacent_similarity": min(similarities) if similarities else None,
-                "token_count": _token_count(text),
-                **_section_metadata(section),
-            },
+            parent_chunk_id=parent_chunk_id,
+            is_embeddable=is_embeddable,
+            metadata=chunk_metadata,
         )
-
-    def _semantic_chunk_text(self, units: list[_SemanticUnit]) -> str:
-        prefix = units[0].prefix if units else ""
-        text = "\n\n".join(unit.text for unit in units if unit.text)
-        if prefix and not text.startswith(prefix):
-            return f"{prefix}\n\n{text}".strip()
-        return text.strip()
-
-    def _make_chunks(
-        self,
-        *,
-        document_id: str,
-        text: str,
-        element_ids: list[str],
-        config: ChunkingConfig,
-        strategy: ChunkStrategy,
-        start_index: int,
-        metadata: dict[str, object] | None = None,
-    ) -> list[DocumentChunk]:
-        chunks: list[DocumentChunk] = []
-        for offset, window in enumerate(_window_text(text, config.max_tokens, config.overlap_tokens)):
-            chunk_index = start_index + offset
-            chunks.append(
-                DocumentChunk(
-                    chunk_id=f"{document_id}:chunk:{chunk_index}",
-                    document_id=document_id,
-                    chunk_index=chunk_index,
-                    text=window,
-                    strategy=strategy,
-                    source_element_ids=element_ids,
-                    content_hash=content_hash(window),
-                    metadata={
-                        **(metadata or {}),
-                        "token_count": _token_count(window),
-                    },
-                )
-            )
-        return chunks
 
     def _sections(self, document: ParsedDocument) -> list[_StructuralSection]:
         sections: list[_StructuralSection] = []
@@ -553,18 +397,3 @@ class DocumentChunker:
             for element in section.elements
             if _element_text(element)
         ]
-
-
-def _cosine_similarity(left: list[float], right: list[float]) -> float:
-    if len(left) != len(right) or not left:
-        raise SemanticChunkingError("Semantic chunking received vectors with incompatible dimensions.")
-    dot = sum(float(a) * float(b) for a, b in zip(left, right, strict=True))
-    left_norm = math.sqrt(sum(float(value) ** 2 for value in left))
-    right_norm = math.sqrt(sum(float(value) ** 2 for value in right))
-    if left_norm == 0.0 or right_norm == 0.0:
-        return 0.0
-    return dot / (left_norm * right_norm)
-
-
-def _unique(values: list[str]) -> list[str]:
-    return list(dict.fromkeys(values))

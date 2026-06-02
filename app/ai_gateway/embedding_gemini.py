@@ -8,6 +8,8 @@ Gemini profile to one Gemini API key and uses the official google-genai SDK.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import re
 import time
 from typing import Any
@@ -17,6 +19,34 @@ from google.genai import types
 
 from .base_rotator import RotationResult
 from .key_pool import KeyConfig
+
+logger = logging.getLogger("ai_gateway.embedding")
+
+# Khi profile không khai báo batch_size, gom tối đa ngần này chunk vào một request
+# embed_content để tránh vừa nổ token-limit (1 request khổng lồ) vừa spam API
+# (mỗi chunk một request). Có thể giảm/đặt batch_size trên profile nếu model giới
+# hạn số input mỗi request.
+DEFAULT_EMBEDDING_BATCH_SIZE = 100
+
+# Retry/backoff khi provider trả rate-limit/quá tải tạm thời (429/RESOURCE_EXHAUSTED,
+# 503/UNAVAILABLE, deadline). Đây là cơ chế "ngủ rồi thử lại" thay vì văng lỗi đỏ.
+_MAX_EMBEDDING_RETRIES = 5
+_RETRY_BASE_DELAY_SECONDS = 2.0
+_RETRY_MAX_DELAY_SECONDS = 30.0
+_TRANSIENT_STATUS_CODES = {429, 500, 502, 503, 504}
+_TRANSIENT_MARKERS = (
+    "resource_exhausted",
+    "rate limit",
+    "rate-limit",
+    "ratelimit",
+    "quota",
+    "too many requests",
+    "unavailable",
+    "overloaded",
+    "deadline",
+    "timeout",
+    "try again",
+)
 
 
 class EmbeddingDimensionMismatch(Exception):
@@ -97,23 +127,59 @@ class EmbeddingRotator:
         normalized_inputs = [_text_for_gemini_embedding(value) for value in inputs]
 
         default_batch_size = self.key.extra.get("embedding_batch_size", self.max_batch_size)
-        batch_size = int(kwargs.pop("batch_size", default_batch_size or len(inputs)))
+        batch_size = int(kwargs.pop("batch_size", default_batch_size or DEFAULT_EMBEDDING_BATCH_SIZE))
         if batch_size <= 0:
             raise ValueError("batch_size phải lớn hơn 0.")
 
         config = self._embed_config(kwargs)
+        model_name = _gemini_model_name(self.key.model_name)
         vectors: list[list[float]] = []
         client = genai.Client(api_key=self.key.api_key)
         async with client.aio as async_client:
             for start in range(0, len(normalized_inputs), batch_size):
                 batch = normalized_inputs[start:start + batch_size]
-                response = await async_client.models.embed_content(
-                    model=_gemini_model_name(self.key.model_name),
-                    contents=[_content_for_gemini_embedding(text) for text in batch],
+                response = await self._embed_batch_with_retry(
+                    async_client,
+                    model_name=model_name,
+                    batch=batch,
                     config=config,
                 )
                 vectors.extend(self._extract(response, expected_n=len(batch)))
         return vectors
+
+    async def _embed_batch_with_retry(
+        self,
+        async_client: Any,
+        *,
+        model_name: str,
+        batch: list[str],
+        config: types.EmbedContentConfig | None,
+    ) -> Any:
+        contents = [_content_for_gemini_embedding(text) for text in batch]
+        last_exc: Exception | None = None
+        for attempt in range(1, _MAX_EMBEDDING_RETRIES + 1):
+            try:
+                return await async_client.models.embed_content(
+                    model=model_name,
+                    contents=contents,
+                    config=config,
+                )
+            except Exception as exc:  # noqa: BLE001 - phân loại lại ngay bên dưới
+                if not _is_transient_error(exc) or attempt == _MAX_EMBEDDING_RETRIES:
+                    raise
+                last_exc = exc
+                delay = min(_RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1)), _RETRY_MAX_DELAY_SECONDS)
+                logger.warning(
+                    "Gemini embedding rate-limited (lần %d/%d), chờ %.1fs rồi thử lại: %s",
+                    attempt,
+                    _MAX_EMBEDDING_RETRIES,
+                    delay,
+                    _redact_sensitive_text(str(exc))[:200],
+                )
+                await asyncio.sleep(delay)
+        if last_exc is not None:  # pragma: no cover - vòng lặp luôn return/raise trước
+            raise last_exc
+        raise RuntimeError("Embedding retry loop kết thúc bất thường.")
 
     def _embed_config(self, overrides: dict[str, Any]) -> types.EmbedContentConfig | None:
         raw = {
@@ -197,6 +263,19 @@ def _content_for_gemini_embedding(text: str) -> types.Content:
     # gemini-embedding-2. Keep chunks as separate Content objects so each one
     # receives its own vector.
     return types.Content(parts=[types.Part(text=text)])
+
+
+def _is_transient_error(exc: Exception) -> bool:
+    """Lỗi tạm thời (rate-limit/quá tải) thì nên backoff + retry, không phải lỗi cấu hình."""
+    if isinstance(exc, EmbeddingDimensionMismatch):
+        return False
+    code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+    if isinstance(code, int) and code in _TRANSIENT_STATUS_CODES:
+        return True
+    message = str(exc).lower()
+    if any(str(status_code) in message for status_code in _TRANSIENT_STATUS_CODES):
+        return True
+    return any(marker in message for marker in _TRANSIENT_MARKERS)
 
 
 def _embedding_error_reason(exc: Exception) -> str:

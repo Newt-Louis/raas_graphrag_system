@@ -29,6 +29,20 @@ class GraphRAGIngestionPipeline:
         if semantic_extractor is None:
             return result
 
+        return await self.extract_semantic_graph(
+            bundle,
+            semantic_extractor=semantic_extractor,
+            base_result=result,
+        )
+
+    async def extract_semantic_graph(
+        self,
+        bundle: IngestionBundle,
+        *,
+        semantic_extractor: SemanticGraphExtractor,
+        base_result: GraphIngestResult | None = None,
+    ) -> GraphIngestResult:
+        result = base_result or self.graph_store.ingest_bundle(bundle)
         parsed = bundle.parsed_document
         scope = GraphDatabaseScope(
             tenant_id=parsed.scope.tenant_id,

@@ -358,10 +358,10 @@ class ChatCompletionServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([block.chunk_id for block in compacted], ["chunk-a", "chunk-b"])
         self.assertEqual(sum(len(block.text) for block in compacted), 15)
 
-    def test_ingest_enables_semantic_graph_extraction_by_default(self) -> None:
+    def test_ingest_disables_semantic_graph_extraction_by_default(self) -> None:
         parameter = inspect.signature(ingest_document).parameters["extract_semantic_graph"]
 
-        self.assertTrue(parameter.default.default)
+        self.assertFalse(parameter.default.default)
 
     def test_chat_response_parser_rejects_non_json_output(self) -> None:
         decision = parse_chat_response(
