@@ -6,6 +6,7 @@ import unittest
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import patch
+from uuid import UUID
 
 from app.ai_gateway.base_rotator import RotationResult
 from app.api.v1.chat import _chat_sse_events
@@ -20,14 +21,16 @@ from app.graphrag.vector_database import (
     InMemoryPrecomputedVectorStore,
     PrecomputedVectorRecord,
 )
+from app.models.documents import Document
 from app.schemas.chat import ChatCompletionRequest, ChatCompletionResponse
+from app.core.config import settings
 from app.services.chat.completion import (
     ChatCompletionService,
     _ContextBlock,
     _compact_context_blocks,
 )
 from app.services.chat.behavior import DEFAULT_CHAT_BEHAVIOR
-from app.services.chat.policy import parse_chat_response
+from app.services.chat.policy import chat_response_messages, parse_chat_response
 
 
 TEST_REFUSAL = "Fixed refusal."
@@ -58,6 +61,16 @@ class FakeProfileSession(FakeSession):
                 for retrieval_top_k in self.retrieval_top_k_values
             ]
         )
+
+
+class FakeDocumentSession(FakeSession):
+    def __init__(self, documents) -> None:
+        self.documents = documents
+
+    def scalars(self, statement):
+        if "embedding_model_profiles" in str(statement):
+            return FakeScalarResult([])
+        return FakeScalarResult(self.documents)
 
 
 class FakeEmbeddingGateway:
@@ -181,7 +194,7 @@ class ChatCompletionServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.citations[0].filename, "architecture.txt")
         self.assertEqual(response.usage["total_tokens"], 42)
         self.assertIn("LanceDB", llm_gateway.calls[-1]["messages"][-1]["content"])
-        self.assertIn("Return only valid JSON", llm_gateway.calls[-1]["messages"][0]["content"])
+        self.assertIn("Chỉ trả về JSON hợp lệ", llm_gateway.calls[-1]["messages"][0]["content"])
 
     async def test_social_message_embeds_first_then_uses_one_llm_call(self) -> None:
         llm_gateway = FakeLLMGateway(
@@ -288,6 +301,55 @@ class ChatCompletionServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.answer, TEST_REFUSAL)
         self.assertEqual(len(llm_gateway.calls), 1)
 
+    async def test_document_inventory_question_uses_document_registry_context(self) -> None:
+        document = Document(
+            id=UUID("11111111-1111-1111-1111-111111111111"),
+            filename="customer-guide.pdf",
+            extension=".pdf",
+            byte_size=100,
+            sha256="a" * 64,
+            status="ready",
+            chunk_count=7,
+            vector_record_count=7,
+            graph_record_count=14,
+            metadata_json={
+                "scope": {
+                    "tenant_id": "tenant-a",
+                    "app_id": "app-a",
+                    "collection_id": "docs",
+                }
+            },
+        )
+        llm_gateway = FakeLLMGateway(
+            '{"decision":"grounded_answer","answer":"Tôi đang có tài liệu customer-guide.pdf. [1]",'
+            '"used_references":[1],"self_check":"pass"}'
+        )
+        service = ChatCompletionService(
+            FakeDocumentSession([document]),
+            vector_store=InMemoryPrecomputedVectorStore(),
+            graph_store=FakeGraphStore(),
+            behavior=TEST_BEHAVIOR,
+        )
+
+        with (
+            patch("app.services.chat.completion.build_embedding_gateway", return_value=FakeEmbeddingGateway()),
+            patch("app.services.chat.completion.build_llm_gateway", return_value=llm_gateway),
+        ):
+            response = await service.complete(
+                ChatCompletionRequest(
+                    tenant_id="tenant-a",
+                    app_id="app-a",
+                    collection_id="docs",
+                    message="bạn đang nắm giữ thông tin tài liệu gì?",
+                )
+            )
+
+        rendered_prompt = llm_gateway.calls[-1]["messages"][-1]["content"]
+        self.assertEqual(response.strategy, "document_registry")
+        self.assertEqual(response.response_type, "grounded_answer")
+        self.assertEqual(response.citations[0].source, "document_registry")
+        self.assertIn("customer-guide.pdf", rendered_prompt)
+
     async def test_chat_grounding_threshold_rejects_weak_match(self) -> None:
         service = ChatCompletionService(
             FakeSession(),
@@ -385,6 +447,18 @@ class ChatCompletionServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(decision.response_type, "refusal")
 
+    def test_chat_response_parser_accepts_valid_inline_citation_when_used_references_missing(self) -> None:
+        decision = parse_chat_response(
+            '{"decision":"grounded_answer","answer":"Khách hàng mới được tạo từ menu Khách Hàng. [2]",'
+            '"used_references":[],"self_check":"pass"}',
+            valid_references={1, 2},
+            allow_grounded_answer=True,
+            behavior=TEST_BEHAVIOR,
+        )
+
+        self.assertEqual(decision.response_type, "grounded_answer")
+        self.assertEqual(decision.references, [2])
+
     def test_chat_response_parser_rejects_social_answer_when_self_check_fails(self) -> None:
         decision = parse_chat_response(
             '{"decision":"social","answer":"Winter flowers always bloom.",'
@@ -440,6 +514,21 @@ class ChatCompletionServiceTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(decision.response_type, "refusal")
+
+    def test_default_chat_similarity_threshold_uses_settings(self) -> None:
+        self.assertEqual(DEFAULT_CHAT_BEHAVIOR.grounded_min_similarity, settings.CHAT_MIN_GROUNDED_SIMILARITY)
+
+    def test_prompt_treats_paraphrased_workflow_questions_as_groundable(self) -> None:
+        messages = chat_response_messages(
+            question="luồng đăng ký khách hàng mới?",
+            history=[],
+            rendered_context="[1] Quy trình tạo khách hàng mới gồm mở menu Khách Hàng và bấm Lưu.",
+            rendered_entities="",
+            has_document_context=True,
+            behavior=TEST_BEHAVIOR,
+        )
+
+        self.assertIn("gần nghĩa", messages[0]["content"])
 
     async def test_chat_sse_stream_emits_metadata_character_deltas_and_done(self) -> None:
         response = ChatCompletionResponse(

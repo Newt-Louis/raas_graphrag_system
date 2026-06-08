@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+import unicodedata
 from dataclasses import dataclass
 from uuid import UUID
 
@@ -108,6 +110,7 @@ class ChatCompletionService:
         grounded_matches = retrieval.vector_matches
         graph_chunks = retrieval.graph_chunks
         graph_entities = retrieval.graph_entities
+        document_registry_blocks = self._document_registry_blocks(payload)
         parent_graph_chunks = [
             chunk
             for chunk in graph_chunks
@@ -120,6 +123,7 @@ class ChatCompletionService:
         ]
         context_blocks = _compact_context_blocks(
             [
+                *document_registry_blocks,
                 *[
                     _ContextBlock(
                         source="graph",
@@ -235,6 +239,52 @@ class ChatCompletionService:
             return None
         return document.filename if document is not None else None
 
+    def _document_registry_blocks(self, payload: ChatCompletionRequest) -> list[_ContextBlock]:
+        if not _is_document_inventory_question(payload.message):
+            return []
+        documents = self._scoped_documents(payload)
+        lines = [
+            "Document registry for the current tenant/app scope.",
+            "Use this metadata only to answer questions about which documents are loaded or indexed.",
+        ]
+        if documents:
+            for index, document in enumerate(documents[:20], start=1):
+                collection = document.collection_id or "default"
+                lines.append(
+                    f"{index}. filename={document.filename}; status={document.status}; "
+                    f"collection={collection}; chunks={document.chunk_count}; "
+                    f"vectors={document.vector_record_count}; graph_records={document.graph_record_count}"
+                )
+        else:
+            lines.append("No documents are currently registered in this tenant/app scope.")
+        return [
+            _ContextBlock(
+                source="document_registry",
+                document_id="document-registry",
+                chunk_id="document-registry",
+                text="\n".join(lines),
+                filename="Document registry",
+            )
+        ]
+
+    def _scoped_documents(self, payload: ChatCompletionRequest) -> list[Document]:
+        try:
+            documents = list(
+                self.db.scalars(select(Document).order_by(Document.created_at.desc())).all()
+            )
+        except Exception:
+            return []
+        return [
+            document
+            for document in documents
+            if _document_matches_scope(
+                document,
+                tenant_id=payload.tenant_id,
+                app_id=payload.app_id,
+                collection_id=payload.collection_id,
+            )
+        ]
+
     def _retrieval_top_k(self) -> int:
         try:
             profiles = self.db.scalars(
@@ -324,6 +374,55 @@ def _retrieval_query(payload: ChatCompletionRequest) -> str:
     return f"{previous_questions[-1]}\nFollow-up: {payload.message}"
 
 
+def _is_document_inventory_question(message: str) -> bool:
+    normalized = _normalized_text(message)
+    has_document_subject = any(
+        term in normalized
+        for term in (
+            "tai lieu",
+            "document",
+            "file",
+            "du lieu",
+            "thong tin tai lieu",
+        )
+    )
+    has_inventory_intent = any(
+        term in normalized
+        for term in (
+            "dang nam giu",
+            "dang co",
+            "co nhung",
+            "co tai lieu gi",
+            "danh sach",
+            "liet ke",
+            "da nap",
+            "da upload",
+            "da tai len",
+            "tai lieu gi",
+            "nhung tai lieu nao",
+        )
+    )
+    return has_document_subject and has_inventory_intent
+
+
+def _document_matches_scope(
+    document: Document,
+    *,
+    tenant_id: str,
+    app_id: str,
+    collection_id: str | None,
+) -> bool:
+    metadata = document.metadata_json or {}
+    raw_scope = metadata.get("scope") or {}
+    document_tenant_id = raw_scope.get("tenant_id") or document.tenant_id
+    document_app_id = raw_scope.get("app_id") or document.app_id
+    if str(document_tenant_id or "") != tenant_id or str(document_app_id or "") != app_id:
+        return False
+    if collection_id and str(raw_scope.get("collection_id") or document.collection_id or "") != collection_id:
+        return False
+    return document.status not in {"archived", "deleted"}
+
+
 def _citations(blocks: list[_ContextBlock]) -> list[ChatCitationResponse]:
     return [
         ChatCitationResponse(
@@ -348,6 +447,12 @@ def _truncate_text(value: str, limit: int) -> str:
     return f"{clean_value[: limit - 3].rstrip()}..."
 
 
+def _normalized_text(value: str) -> str:
+    normalized = unicodedata.normalize("NFD", str(value or "").casefold())
+    without_marks = "".join(char for char in normalized if unicodedata.category(char) != "Mn")
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", without_marks).split())
+
+
 def _combined_usage(embedding_usage: dict, answer_usage: dict) -> dict:
     return {
         "retrieval_embedding": dict(embedding_usage or {}),
@@ -367,6 +472,8 @@ def _response_strategy(
         return "embedding_first_social"
     if response_type == "refusal" and not context_blocks:
         return "embedding_first_no_context"
+    if any(block.source == "document_registry" for block in context_blocks):
+        return "document_registry"
     if graph_entities:
         return "vector_semantic_graph"
     if graph_chunks:
